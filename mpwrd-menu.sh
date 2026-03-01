@@ -477,7 +477,7 @@ run_service_action() {
   esac
 }
 
-list_regular_files() {
+list_relative_files() {
   local dir="$1"
   local result_name="$2"
   local -n result_ref="$result_name"
@@ -485,20 +485,20 @@ list_regular_files() {
   result_ref=()
   [[ -d "$dir" ]] || return 0
 
-  mapfile -t result_ref < <(find "$dir" -maxdepth 1 -mindepth 1 -type f -printf '%f\n' 2>/dev/null | sort)
+  mapfile -t result_ref < <(find "$dir" -mindepth 1 -type f -printf '%P\n' 2>/dev/null | sort)
 }
 
 apply_board_config() {
-  local filename="$1"
-  local source_path="$AVAILABLE_CONFIG_DIR/$filename"
-  local target_path="$ACTIVE_CONFIG_DIR/$filename"
+  local relative_path="$1"
+  local source_path="$AVAILABLE_CONFIG_DIR/$relative_path"
+  local target_path="$ACTIVE_CONFIG_DIR/$(basename "$relative_path")"
 
   if [[ ! -f "$source_path" ]]; then
     message_box "Config not found: $source_path"
     return 1
   fi
 
-  run_and_pause "Applying board config: $filename" install_board_config_file "$source_path" "$target_path"
+  run_and_pause "Applying board config: $relative_path" install_board_config_file "$source_path" "$target_path"
 }
 
 remove_board_config() {
@@ -687,7 +687,7 @@ board_config_file_menu() {
   local handler="$4"
   local configs=()
 
-  list_regular_files "$directory" configs
+  list_relative_files "$directory" configs
   if (( ${#configs[@]} == 0 )); then
     message_box "$empty_message"
     return 0
