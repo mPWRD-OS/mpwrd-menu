@@ -1,0 +1,9 @@
+# label|manager|package
+# manager values: apt or pipx
+# Copy this to mesh-apps.conf to keep local customizations separate.
+
+Contact|pipx|contact
+Meshtastic CLI|pipx|meshtastic
+
+# Example apt entry:
+# Example App|apt|example-package
