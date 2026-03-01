@@ -47,5 +47,6 @@ cp mesh-services.conf.example mesh-services.conf
 - `Network Quick Start` runs `nmtui` and returns directly to the menu when finished.
 - `Contact` in the main menu runs the `contact` command directly.
 - `Mesh Apps Manager` reads `mesh-apps.conf` first, then falls back to `mesh-apps.conf.example`.
+- App manager types supported in `mesh-apps.conf` are `apt`, `pipx`, and `pipx-global`.
 - `Meshtastic Related Services` reads `mesh-services.conf` first, then falls back to `mesh-services.conf.example`.
 - Board configs are copied from `/etc/meshtasticd/available.d/` into `/etc/meshtasticd/config.d/`.

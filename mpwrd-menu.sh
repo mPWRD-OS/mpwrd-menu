@@ -12,6 +12,9 @@ readonly SERVICE_REGISTRY="${SERVICE_REGISTRY:-$SERVICE_REGISTRY_DEFAULT}"
 readonly MESHTASTIC_PACKAGE="meshtasticd"
 readonly MESHTASTIC_DEBIAN_SERIES="Debian_13"
 readonly REPO_CHANNELS=("beta" "alpha" "daily")
+readonly PIPX_GLOBAL_HOME="/opt/pipx"
+readonly PIPX_GLOBAL_BIN_DIR="/usr/local/bin"
+readonly PIPX_GLOBAL_MAN_DIR="/usr/local/share/man"
 readonly AVAILABLE_CONFIG_DIR="/etc/meshtasticd/available.d"
 readonly ACTIVE_CONFIG_DIR="/etc/meshtasticd/config.d"
 
@@ -519,6 +522,7 @@ manage_app_action() {
   local package="$3"
   local action="$4"
   local verb=""
+  local resolved_manager=""
 
   case "$action" in
     install)
@@ -532,7 +536,12 @@ manage_app_action() {
       ;;
   esac
 
-  case "$manager" in
+  resolved_manager="$manager"
+  if [[ "$manager" == "pipx" ]]; then
+    resolved_manager="$(resolve_pipx_manager "$package")"
+  fi
+
+  case "$resolved_manager" in
     apt)
       run_and_pause "${verb} ${label}..." apt_package_action "$action" "$package"
       ;;
@@ -549,11 +558,50 @@ manage_app_action() {
 
       run_and_pause "${verb} ${label}..." pipx "$action" "$package"
       ;;
+    pipx-global)
+      if ! command_exists pipx; then
+        message_box 'pipx is not installed.'
+        return 1
+      fi
+
+      run_and_pause "${verb} ${label}..." run_pipx_global_action "$action" "$package"
+      ;;
     *)
-      message_box "Unsupported app manager: $manager"
+      message_box "Unsupported app manager: $resolved_manager"
       return 1
       ;;
   esac
+}
+
+resolve_pipx_manager() {
+  local package="$1"
+  local command_path=""
+  local resolved_path=""
+
+  command_path="$(command -v "$package" 2>/dev/null || true)"
+  if [[ -z "$command_path" ]]; then
+    printf 'pipx'
+    return 0
+  fi
+
+  resolved_path="$(readlink -f "$command_path" 2>/dev/null || printf '%s' "$command_path")"
+  if [[ "$command_path" == /usr/local/bin/* || "$resolved_path" == /opt/pipx/venvs/* ]]; then
+    printf 'pipx-global'
+    return 0
+  fi
+
+  printf 'pipx'
+}
+
+run_pipx_global_action() {
+  local action="$1"
+  local package="$2"
+
+  as_root env \
+    PIPX_HOME="$PIPX_GLOBAL_HOME" \
+    PIPX_BIN_DIR="$PIPX_GLOBAL_BIN_DIR" \
+    PIPX_MAN_DIR="$PIPX_GLOBAL_MAN_DIR" \
+    pipx "$action" "$package"
 }
 
 indexed_list_menu() {
