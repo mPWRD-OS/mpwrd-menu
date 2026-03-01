@@ -211,20 +211,33 @@ run_terminal_program() {
   local mode="$1"
   local program="$2"
   shift 2 || true
+  local run_as_root=0
 
   if ! command_exists "$program"; then
     message_box "Command not found: $program"
     return 1
   fi
 
-  if [[ "$mode" == "pause" ]]; then
-    run_and_pause "Launching $program..." "$program" "$@"
+  if [[ "$mode" == root-* ]]; then
+    run_as_root=1
+  fi
+
+  if [[ "$mode" == *pause ]]; then
+    if (( run_as_root )); then
+      run_and_pause "Launching $program..." as_root "$program" "$@"
+    else
+      run_and_pause "Launching $program..." "$program" "$@"
+    fi
     return $?
   fi
 
   show_cursor
   clear_screen
-  "$program" "$@"
+  if (( run_as_root )); then
+    as_root "$program" "$@"
+  else
+    "$program" "$@"
+  fi
   hide_cursor
 }
 
@@ -801,7 +814,7 @@ main_menu() {
         mesh_apps_menu
         ;;
       4)
-        run_terminal_program no-pause nmtui
+        run_terminal_program root-no-pause nmtui
         ;;
       5)
         board_config_menu
