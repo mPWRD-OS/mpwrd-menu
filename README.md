@@ -17,6 +17,7 @@ Lightweight TUI for mPWRD-OS.
 
 - `mpwrd-menu.sh`: Main TUI script
 - `mesh-apps.conf.example`: Example app list for the Mesh Apps Manager
+- `mesh-services.conf.example`: Example service list for Meshtastic Related Services
 
 ## Install
 
@@ -30,6 +31,7 @@ Optional local app list override:
 
 ```bash
 cp mesh-apps.conf.example mesh-apps.conf
+cp mesh-services.conf.example mesh-services.conf
 ```
 
 ## Run
@@ -45,4 +47,5 @@ cp mesh-apps.conf.example mesh-apps.conf
 - `Network Quick Start` runs `nmtui` and returns directly to the menu when finished.
 - `Contact` in the main menu runs the `contact` command directly.
 - `Mesh Apps Manager` reads `mesh-apps.conf` first, then falls back to `mesh-apps.conf.example`.
+- `Meshtastic Related Services` reads `mesh-services.conf` first, then falls back to `mesh-services.conf.example`.
 - Board configs are copied from `/etc/meshtasticd/available.d/` into `/etc/meshtasticd/config.d/`.

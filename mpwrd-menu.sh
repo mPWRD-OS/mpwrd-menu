@@ -6,8 +6,12 @@ readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly APP_REGISTRY_DEFAULT="$SCRIPT_DIR/mesh-apps.conf"
 readonly APP_REGISTRY_EXAMPLE="$SCRIPT_DIR/mesh-apps.conf.example"
 readonly APP_REGISTRY="${APP_REGISTRY:-$APP_REGISTRY_DEFAULT}"
+readonly SERVICE_REGISTRY_DEFAULT="$SCRIPT_DIR/mesh-services.conf"
+readonly SERVICE_REGISTRY_EXAMPLE="$SCRIPT_DIR/mesh-services.conf.example"
+readonly SERVICE_REGISTRY="${SERVICE_REGISTRY:-$SERVICE_REGISTRY_DEFAULT}"
 readonly MESHTASTIC_PACKAGE="meshtasticd"
 readonly MESHTASTIC_DEBIAN_SERIES="Debian_13"
+readonly REPO_CHANNELS=("beta" "alpha" "daily")
 readonly AVAILABLE_CONFIG_DIR="/etc/meshtasticd/available.d"
 readonly ACTIVE_CONFIG_DIR="/etc/meshtasticd/config.d"
 
@@ -16,6 +20,12 @@ READ_KEY=""
 APP_LABELS=()
 APP_MANAGERS=()
 APP_PACKAGES=()
+APP_ACTION_LABELS=("Install" "Upgrade" "Uninstall" "Back")
+APP_ACTION_KEYS=("install" "upgrade" "uninstall" "back")
+SERVICE_LABELS=()
+SERVICE_UNITS=()
+SERVICE_ACTION_LABELS=("Status" "Start" "Stop" "Restart" "Enable" "Disable" "Back")
+SERVICE_ACTION_KEYS=("status" "start" "stop" "restart" "enable" "disable" "back")
 
 cleanup() {
   printf '\033[0m\033[?25h'
@@ -195,24 +205,18 @@ run_and_pause() {
 }
 
 run_terminal_program() {
-  local program="$1"
-  shift || true
+  local mode="$1"
+  local program="$2"
+  shift 2 || true
 
   if ! command_exists "$program"; then
     message_box "Command not found: $program"
     return 1
   fi
 
-  run_and_pause "Launching $program..." "$program" "$@"
-}
-
-run_terminal_program_no_pause() {
-  local program="$1"
-  shift || true
-
-  if ! command_exists "$program"; then
-    message_box "Command not found: $program"
-    return 1
+  if [[ "$mode" == "pause" ]]; then
+    run_and_pause "Launching $program..." "$program" "$@"
+    return $?
   fi
 
   show_cursor
@@ -221,19 +225,21 @@ run_terminal_program_no_pause() {
   hide_cursor
 }
 
-apt_install_package() {
-  local package="$1"
-  as_root apt-get update && as_root apt-get install -y "$package"
-}
+apt_package_action() {
+  local action="$1"
+  local package="$2"
 
-apt_upgrade_package() {
-  local package="$1"
-  as_root apt-get update && as_root apt-get install --only-upgrade -y "$package"
-}
-
-apt_remove_package() {
-  local package="$1"
-  as_root apt-get remove -y "$package"
+  case "$action" in
+    install)
+      as_root apt-get update && as_root apt-get install -y "$package"
+      ;;
+    upgrade)
+      as_root apt-get update && as_root apt-get install --only-upgrade -y "$package"
+      ;;
+    uninstall)
+      as_root apt-get remove -y "$package"
+      ;;
+  esac
 }
 
 install_board_config_file() {
@@ -242,44 +248,84 @@ install_board_config_file() {
   as_root mkdir -p "$ACTIVE_CONFIG_DIR" && as_root install -m 0644 "$source_file" "$target_file"
 }
 
-load_app_registry() {
-  local source_file="$APP_REGISTRY"
-  local label manager package
+reset_array() {
+  local -n array_ref="$1"
+  array_ref=()
+}
 
-  if [[ ! -f "$source_file" && -f "$APP_REGISTRY_EXAMPLE" ]]; then
-    source_file="$APP_REGISTRY_EXAMPLE"
+append_array() {
+  local -n array_ref="$1"
+  array_ref+=("$2")
+}
+
+resolve_registry_source() {
+  local source_file="$1"
+  local example_file="$2"
+
+  if [[ ! -f "$source_file" && -f "$example_file" ]]; then
+    printf '%s' "$example_file"
+  else
+    printf '%s' "$source_file"
   fi
+}
 
-  APP_LABELS=()
-  APP_MANAGERS=()
-  APP_PACKAGES=()
+load_delimited_records() {
+  local source_file="$1"
+  shift
+  local field_names=("$@")
+  local field_count="${#field_names[@]}"
+  local line valid i
+  local fields=()
+  local field_name
+
+  for field_name in "${field_names[@]}"; do
+    reset_array "$field_name"
+  done
 
   [[ -f "$source_file" ]] || return 0
 
-  while IFS='|' read -r label manager package; do
-    label="$(trim "${label:-}")"
-    manager="$(trim "${manager:-}")"
-    package="$(trim "${package:-}")"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    IFS='|' read -r -a fields <<< "$line"
 
-    if [[ -z "$label" || "${label:0:1}" == "#" ]]; then
+    for (( i = 0; i < field_count; i++ )); do
+      fields[$i]="$(trim "${fields[$i]:-}")"
+    done
+
+    if [[ -z "${fields[0]:-}" || "${fields[0]:0:1}" == "#" ]]; then
       continue
     fi
 
-    if [[ -z "$manager" || -z "$package" ]]; then
-      continue
-    fi
+    valid=1
+    for (( i = 0; i < field_count; i++ )); do
+      if [[ -z "${fields[$i]:-}" ]]; then
+        valid=0
+        break
+      fi
+    done
 
-    APP_LABELS+=("$label")
-    APP_MANAGERS+=("$manager")
-    APP_PACKAGES+=("$package")
+    (( valid )) || continue
+
+    for (( i = 0; i < field_count; i++ )); do
+      append_array "${field_names[$i]}" "${fields[$i]}"
+    done
   done < "$source_file"
+}
+
+load_app_registry() {
+  load_delimited_records "$(resolve_registry_source "$APP_REGISTRY" "$APP_REGISTRY_EXAMPLE")" \
+    APP_LABELS APP_MANAGERS APP_PACKAGES
+}
+
+load_service_registry() {
+  load_delimited_records "$(resolve_registry_source "$SERVICE_REGISTRY" "$SERVICE_REGISTRY_EXAMPLE")" \
+    SERVICE_LABELS SERVICE_UNITS
 }
 
 current_repo_channel() {
   local found=()
   local channel
 
-  for channel in beta alpha daily; do
+  for channel in "${REPO_CHANNELS[@]}"; do
     if [[ -f "/etc/apt/sources.list.d/network:Meshtastic:${channel}.list" ]]; then
       found+=("$channel")
     fi
@@ -300,8 +346,14 @@ current_repo_channel() {
 
 repo_is_ready() {
   local current
+  local channel
+
   current="$(current_repo_channel)"
-  [[ "$current" == beta || "$current" == alpha || "$current" == daily ]]
+  for channel in "${REPO_CHANNELS[@]}"; do
+    [[ "$current" == "$channel" ]] && return 0
+  done
+
+  return 1
 }
 
 switch_repo_channel() {
@@ -311,16 +363,6 @@ switch_repo_channel() {
   local list_file="/etc/apt/sources.list.d/network:Meshtastic:${channel}.list"
   local key_file="/etc/apt/trusted.gpg.d/network_Meshtastic_${channel}.gpg"
   local temp_list temp_key existing rc=0
-  local os_name=""
-
-  if [[ -r /etc/os-release ]]; then
-    os_name="$(. /etc/os-release 2>/dev/null; printf '%s' "${NAME:-}")"
-  fi
-
-  if [[ "$os_name" == Raspbian* ]]; then
-    message_box 'Raspberry Pi OS detected. Use the Raspbian Meshtastic repositories instead.'
-    return 1
-  fi
 
   if ! command_exists gpg; then
     message_box 'gpg is required to install the Meshtastic repository key.'
@@ -346,7 +388,7 @@ switch_repo_channel() {
   clear_screen
   printf 'Switching meshtasticd repository to %s...\n\n' "$channel"
 
-  for existing in beta alpha daily; do
+  for existing in "${REPO_CHANNELS[@]}"; do
     as_root rm -f "/etc/apt/sources.list.d/network:Meshtastic:${existing}.list"
     as_root rm -f "/etc/apt/trusted.gpg.d/network_Meshtastic_${existing}.gpg"
   done
@@ -381,7 +423,7 @@ install_meshtasticd() {
     return 1
   fi
 
-  run_and_pause 'Installing meshtasticd...' apt_install_package "$MESHTASTIC_PACKAGE"
+  run_and_pause 'Installing meshtasticd...' apt_package_action install "$MESHTASTIC_PACKAGE"
 }
 
 upgrade_meshtasticd() {
@@ -390,17 +432,11 @@ upgrade_meshtasticd() {
     return 1
   fi
 
-  run_and_pause 'Upgrading meshtasticd...' apt_upgrade_package "$MESHTASTIC_PACKAGE"
+  run_and_pause 'Upgrading meshtasticd...' apt_package_action upgrade "$MESHTASTIC_PACKAGE"
 }
 
 uninstall_meshtasticd() {
-  run_and_pause 'Uninstalling meshtasticd...' apt_remove_package "$MESHTASTIC_PACKAGE"
-}
-
-manage_service() {
-  local unit="$1"
-  local action="$2"
-  run_and_pause "systemctl ${action} ${unit}" as_root systemctl "$action" "$unit"
+  run_and_pause 'Uninstalling meshtasticd...' apt_package_action uninstall "$MESHTASTIC_PACKAGE"
 }
 
 service_status_prompt() {
@@ -419,6 +455,26 @@ service_status_prompt() {
   fi
 
   printf 'Unit: %s | Active: %s | Enabled: %s' "$unit" "$active" "$enabled"
+}
+
+manage_service() {
+  local unit="$1"
+  local action="$2"
+  run_and_pause "systemctl ${action} ${unit}" as_root systemctl "$action" "$unit"
+}
+
+run_service_action() {
+  local unit="$1"
+  local action="$2"
+
+  case "$action" in
+    status)
+      run_and_pause "systemctl status ${unit}" systemctl status --no-pager --full "$unit"
+      ;;
+    start|stop|restart|enable|disable)
+      manage_service "$unit" "$action"
+      ;;
+  esac
 }
 
 list_regular_files() {
@@ -462,20 +518,23 @@ manage_app_action() {
   local manager="$2"
   local package="$3"
   local action="$4"
+  local verb=""
+
+  case "$action" in
+    install)
+      verb="Installing"
+      ;;
+    upgrade)
+      verb="Upgrading"
+      ;;
+    uninstall)
+      verb="Uninstalling"
+      ;;
+  esac
 
   case "$manager" in
     apt)
-      case "$action" in
-        install)
-          run_and_pause "Installing ${label}..." apt_install_package "$package"
-          ;;
-        upgrade)
-          run_and_pause "Upgrading ${label}..." apt_upgrade_package "$package"
-          ;;
-        uninstall)
-          run_and_pause "Uninstalling ${label}..." apt_remove_package "$package"
-          ;;
-      esac
+      run_and_pause "${verb} ${label}..." apt_package_action "$action" "$package"
       ;;
     pipx)
       if (( EUID == 0 )); then
@@ -488,17 +547,7 @@ manage_app_action() {
         return 1
       fi
 
-      case "$action" in
-        install)
-          run_and_pause "Installing ${label}..." pipx install "$package"
-          ;;
-        upgrade)
-          run_and_pause "Upgrading ${label}..." pipx upgrade "$package"
-          ;;
-        uninstall)
-          run_and_pause "Uninstalling ${label}..." pipx uninstall "$package"
-          ;;
-      esac
+      run_and_pause "${verb} ${label}..." pipx "$action" "$package"
       ;;
     *)
       message_box "Unsupported app manager: $manager"
@@ -507,90 +556,93 @@ manage_app_action() {
   esac
 }
 
+indexed_list_menu() {
+  local title="$1"
+  local prompt="$2"
+  local labels_name="$3"
+  local handler="$4"
+  local -n labels_ref="$labels_name"
+  local options=()
+  local label
+
+  while true; do
+    options=()
+    for label in "${labels_ref[@]}"; do
+      options+=("$label")
+    done
+    options+=("Back")
+
+    menu_choose "$title" "$prompt" options || return 0
+    if (( MENU_RESULT == ${#labels_ref[@]} )); then
+      return 0
+    fi
+
+    "$handler" "$MENU_RESULT"
+  done
+}
+
 service_menu() {
-  local service_label="$1"
-  local unit="$2"
-  local options=("Status" "Start" "Stop" "Restart" "Enable" "Disable" "Back")
+  local index="$1"
+  local service_label="${SERVICE_LABELS[$index]}"
+  local unit="${SERVICE_UNITS[$index]}"
   local prompt
+  local action
 
   while true; do
     prompt="$(service_status_prompt "$unit")"
-    menu_choose "$service_label" "$prompt" options || return 0
-    case "$MENU_RESULT" in
-      0)
-        run_and_pause "systemctl status ${unit}" systemctl status --no-pager --full "$unit"
-        ;;
-      1)
-        manage_service "$unit" start
-        ;;
-      2)
-        manage_service "$unit" stop
-        ;;
-      3)
-        manage_service "$unit" restart
-        ;;
-      4)
-        manage_service "$unit" enable
-        ;;
-      5)
-        manage_service "$unit" disable
-        ;;
-      6)
-        return 0
-        ;;
-    esac
+    menu_choose "$service_label" "$prompt" SERVICE_ACTION_LABELS || return 0
+    action="${SERVICE_ACTION_KEYS[$MENU_RESULT]}"
+    if [[ "$action" == "back" ]]; then
+      return 0
+    fi
+
+    run_service_action "$unit" "$action"
   done
 }
 
 related_services_menu() {
-  local options=("meshtasticd" "avahi" "wifisync" "Back")
+  load_service_registry
+  if (( ${#SERVICE_LABELS[@]} == 0 )); then
+    message_box "No services are configured. Add entries to $SERVICE_REGISTRY or $SERVICE_REGISTRY_EXAMPLE."
+    return 0
+  fi
 
-  while true; do
-    menu_choose 'Meshtastic Related Services' 'Manage systemd units for Meshtastic support services.' options || return 0
-    case "$MENU_RESULT" in
-      0)
-        service_menu 'meshtasticd' 'meshtasticd.service'
-        ;;
-      1)
-        service_menu 'avahi' 'avahi-daemon.service'
-        ;;
-      2)
-        service_menu 'wifisync' 'wifisync.service'
-        ;;
-      3)
-        return 0
-        ;;
-    esac
-  done
+  indexed_list_menu 'Meshtastic Related Services' \
+    'Manage systemd units for Meshtastic support services.' \
+    SERVICE_LABELS service_menu
 }
 
 repo_menu() {
-  local options=("Switch to beta" "Switch to alpha" "Switch to daily" "Install meshtasticd" "Upgrade meshtasticd" "Uninstall meshtasticd" "Back")
+  local options=()
   local prompt
+  local channel
+  local channel_count="${#REPO_CHANNELS[@]}"
 
   while true; do
+    options=()
+    for channel in "${REPO_CHANNELS[@]}"; do
+      options+=("Switch to $channel")
+    done
+    options+=("Install meshtasticd" "Upgrade meshtasticd" "Uninstall meshtasticd" "Back")
+
     prompt="Current repo: $(current_repo_channel)"
     menu_choose 'meshtasticd Repository' "$prompt" options || return 0
-    case "$MENU_RESULT" in
+    if (( MENU_RESULT < channel_count )); then
+      switch_repo_channel "${REPO_CHANNELS[$MENU_RESULT]}"
+      continue
+    fi
+
+    case $(( MENU_RESULT - channel_count )) in
       0)
-        switch_repo_channel beta
-        ;;
-      1)
-        switch_repo_channel alpha
-        ;;
-      2)
-        switch_repo_channel daily
-        ;;
-      3)
         install_meshtasticd
         ;;
-      4)
+      1)
         upgrade_meshtasticd
         ;;
-      5)
+      2)
         uninstall_meshtasticd
         ;;
-      6)
+      3)
         return 0
         ;;
     esac
@@ -602,92 +654,53 @@ app_action_menu() {
   local label="${APP_LABELS[$index]}"
   local manager="${APP_MANAGERS[$index]}"
   local package="${APP_PACKAGES[$index]}"
-  local options=("Install" "Upgrade" "Uninstall" "Back")
   local prompt="Manager: ${manager} | Package: ${package}"
+  local action
 
   while true; do
-    menu_choose "$label" "$prompt" options || return 0
-    case "$MENU_RESULT" in
-      0)
-        manage_app_action "$label" "$manager" "$package" install
-        ;;
-      1)
-        manage_app_action "$label" "$manager" "$package" upgrade
-        ;;
-      2)
-        manage_app_action "$label" "$manager" "$package" uninstall
-        ;;
-      3)
-        return 0
-        ;;
-    esac
+    menu_choose "$label" "$prompt" APP_ACTION_LABELS || return 0
+    action="${APP_ACTION_KEYS[$MENU_RESULT]}"
+    if [[ "$action" == "back" ]]; then
+      return 0
+    fi
+
+    manage_app_action "$label" "$manager" "$package" "$action"
   done
 }
 
 mesh_apps_menu() {
-  local options=()
-  local i
-
   load_app_registry
   if (( ${#APP_LABELS[@]} == 0 )); then
     message_box "No mesh apps are configured. Add entries to $APP_REGISTRY or $APP_REGISTRY_EXAMPLE."
     return 0
   fi
 
-  while true; do
-    options=()
-    for i in "${APP_LABELS[@]}"; do
-      options+=("$i")
-    done
-    options+=("Back")
-
-    menu_choose 'Mesh Apps Manager' 'Install, upgrade, or remove configured Meshtastic companion apps.' options || return 0
-    if (( MENU_RESULT == ${#APP_LABELS[@]} )); then
-      return 0
-    fi
-
-    app_action_menu "$MENU_RESULT"
-  done
+  indexed_list_menu 'Mesh Apps Manager' \
+    'Install, upgrade, or remove configured Meshtastic companion apps.' \
+    APP_LABELS app_action_menu
 }
 
-select_available_board_config() {
+board_config_file_menu() {
+  local title="$1"
+  local directory="$2"
+  local empty_message="$3"
+  local handler="$4"
   local configs=()
 
-  list_regular_files "$AVAILABLE_CONFIG_DIR" configs
+  list_regular_files "$directory" configs
   if (( ${#configs[@]} == 0 )); then
-    message_box "No configs found in $AVAILABLE_CONFIG_DIR"
+    message_box "$empty_message"
     return 0
   fi
 
   configs+=("Back")
   while true; do
-    menu_choose 'Apply Board Config' "$AVAILABLE_CONFIG_DIR" configs || return 0
+    menu_choose "$title" "$directory" configs || return 0
     if (( MENU_RESULT == ${#configs[@]} - 1 )); then
       return 0
     fi
 
-    apply_board_config "${configs[$MENU_RESULT]}"
-    return 0
-  done
-}
-
-select_active_board_config() {
-  local configs=()
-
-  list_regular_files "$ACTIVE_CONFIG_DIR" configs
-  if (( ${#configs[@]} == 0 )); then
-    message_box "No active configs found in $ACTIVE_CONFIG_DIR"
-    return 0
-  fi
-
-  configs+=("Back")
-  while true; do
-    menu_choose 'Remove Board Config' "$ACTIVE_CONFIG_DIR" configs || return 0
-    if (( MENU_RESULT == ${#configs[@]} - 1 )); then
-      return 0
-    fi
-
-    remove_board_config "${configs[$MENU_RESULT]}"
+    "$handler" "${configs[$MENU_RESULT]}"
     return 0
   done
 }
@@ -699,10 +712,12 @@ board_config_menu() {
     menu_choose 'Board Config' 'Copy configs from available.d into config.d or remove active configs.' options || return 0
     case "$MENU_RESULT" in
       0)
-        select_available_board_config
+        board_config_file_menu 'Apply Board Config' "$AVAILABLE_CONFIG_DIR" \
+          "No configs found in $AVAILABLE_CONFIG_DIR" apply_board_config
         ;;
       1)
-        select_active_board_config
+        board_config_file_menu 'Remove Board Config' "$ACTIVE_CONFIG_DIR" \
+          "No active configs found in $ACTIVE_CONFIG_DIR" remove_board_config
         ;;
       2)
         return 0
@@ -726,7 +741,7 @@ main_menu() {
     menu_choose 'Main Menu' 'Lightweight TUI for mPWRD-OS.' options || return 0
     case "$MENU_RESULT" in
       0)
-        run_terminal_program contact
+        run_terminal_program pause contact
         ;;
       1)
         related_services_menu
@@ -738,7 +753,7 @@ main_menu() {
         mesh_apps_menu
         ;;
       4)
-        run_terminal_program_no_pause nmtui
+        run_terminal_program no-pause nmtui
         ;;
       5)
         board_config_menu
