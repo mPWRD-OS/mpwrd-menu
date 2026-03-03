@@ -37,14 +37,16 @@ URIs: https://mpwrd-os.github.io/mpwrd-menu
 Suites: testing
 Components: main
 Architectures: all
-Signed-By: /usr/share/keyrings/mpwrd-archive-keyring.gpg
+Signed-By: /etc/apt/keyrings/mpwrd-archive-keyring.gpg
 ```
 
 Install from the testing channel:
 
 ```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+
 curl -fsSL https://mpwrd-os.github.io/mpwrd-menu/mpwrd-archive-keyring.gpg \
-  | sudo tee /usr/share/keyrings/mpwrd-archive-keyring.gpg > /dev/null
+  | sudo tee /etc/apt/keyrings/mpwrd-archive-keyring.gpg > /dev/null
 
 sudo tee /etc/apt/sources.list.d/mpwrd-menu.sources > /dev/null <<'EOF'
 Types: deb
@@ -52,7 +54,7 @@ URIs: https://mpwrd-os.github.io/mpwrd-menu
 Suites: testing
 Components: main
 Architectures: all
-Signed-By: /usr/share/keyrings/mpwrd-archive-keyring.gpg
+Signed-By: /etc/apt/keyrings/mpwrd-archive-keyring.gpg
 EOF
 
 sudo apt update
