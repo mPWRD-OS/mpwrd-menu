@@ -1,0 +1,15 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: mpwrd-menu
+Source: https://github.com/mPWRD-OS/mpwrd-menu
+
+Files: *
+Copyright: 2026 Open Source Country
+License: GPL-3.0-only
+
+License: GPL-3.0-only
+ This package is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; version 3 only.
+ .
+ On Debian systems, the full text of the GNU General Public License
+ version 3 can be found in /usr/share/common-licenses/GPL-3.

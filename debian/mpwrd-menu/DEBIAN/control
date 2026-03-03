@@ -1,0 +1,12 @@
+Package: mpwrd-menu
+Version: 0.1.0+git20260302123000.test
+Architecture: all
+Maintainer: mPWRD-OS <opensourcecountry@gmail.com>
+Installed-Size: 34
+Section: admin
+Priority: optional
+Homepage: https://github.com/mPWRD-OS/mpwrd-menu
+Description: Bash TUI for Meshtastic tasks on mPWRD-OS
+ A dependency-free terminal menu for mPWRD-OS images that provides
+ quick access to Meshtastic services, package actions, network setup,
+ and board configuration tasks.

@@ -1,0 +1,5 @@
+packaging/mpwrd-menu usr/bin
+mpwrd-menu.sh usr/share/mpwrd-menu
+mesh-apps.conf usr/share/mpwrd-menu
+mesh-services.conf usr/share/mpwrd-menu
+mpwrd-archive-keyring.gpg usr/share/keyrings

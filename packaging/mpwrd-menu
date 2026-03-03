@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+
+exec /usr/share/mpwrd-menu/mpwrd-menu.sh "$@"

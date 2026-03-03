@@ -1,1 +1,5 @@
 AGENTS.md
+dist/
+mpwrd-archive-signing-passphrase.txt
+mpwrd-archive-signing-private.asc
+__pycache__/

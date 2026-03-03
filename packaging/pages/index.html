@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mPWRD-OS APT Repository</title>
+</head>
+<body>
+  <h1>mPWRD-OS APT Repository</h1>
+  <p>Public key:</p>
+  <pre>curl -fsSL https://mpwrd-os.github.io/mpwrd-menu/mpwrd-archive-keyring.gpg | sudo tee /usr/share/keyrings/mpwrd-archive-keyring.gpg &gt; /dev/null</pre>
+  <p>Stable channel:</p>
+  <pre>deb [signed-by=/usr/share/keyrings/mpwrd-archive-keyring.gpg] https://mpwrd-os.github.io/mpwrd-menu stable main</pre>
+  <p>Testing channel:</p>
+  <pre>deb [signed-by=/usr/share/keyrings/mpwrd-archive-keyring.gpg] https://mpwrd-os.github.io/mpwrd-menu testing main</pre>
+</body>
+</html>
