@@ -10,8 +10,18 @@
   <p>Public key:</p>
   <pre>curl -fsSL https://mpwrd-os.github.io/mpwrd-menu/mpwrd-archive-keyring.gpg | sudo tee /usr/share/keyrings/mpwrd-archive-keyring.gpg &gt; /dev/null</pre>
   <p>Stable channel:</p>
-  <pre>deb [signed-by=/usr/share/keyrings/mpwrd-archive-keyring.gpg] https://mpwrd-os.github.io/mpwrd-menu stable main</pre>
+  <pre>Types: deb
+URIs: https://mpwrd-os.github.io/mpwrd-menu
+Suites: stable
+Components: main
+Architectures: all
+Signed-By: /usr/share/keyrings/mpwrd-archive-keyring.gpg</pre>
   <p>Testing channel:</p>
-  <pre>deb [signed-by=/usr/share/keyrings/mpwrd-archive-keyring.gpg] https://mpwrd-os.github.io/mpwrd-menu testing main</pre>
+  <pre>Types: deb
+URIs: https://mpwrd-os.github.io/mpwrd-menu
+Suites: testing
+Components: main
+Architectures: all
+Signed-By: /usr/share/keyrings/mpwrd-archive-keyring.gpg</pre>
 </body>
 </html>
