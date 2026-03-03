@@ -1,0 +1,54 @@
+name: Build Debian Package
+
+on:
+  push:
+    branches:
+      - main
+      - developer
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debhelper \
+            devscripts \
+            dpkg-dev \
+            fakeroot \
+            lintian \
+            python3
+
+      - name: Derive package version
+        id: version
+        run: |
+          set -euo pipefail
+          base_version="$(dpkg-parsechangelog -S Version)"
+          timestamp="$(date -u +%Y%m%d%H%M%S)"
+          short_sha="${GITHUB_SHA::7}"
+          echo "version=${base_version}+git${timestamp}.${short_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build package
+        env:
+          MPWRD_MENU_DEB_VERSION: ${{ steps.version.outputs.version }}
+        run: ./packaging/build-deb.sh
+
+      - name: Run lintian
+        run: lintian --fail-on error dist/*.changes
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpwrd-menu_${{ steps.version.outputs.version }}
+          path: dist/*

@@ -1,1 +1,10 @@
 AGENTS.md
+dist/
+mpwrd-archive-signing-passphrase.txt
+mpwrd-archive-signing-private.asc
+__pycache__/
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/*.substvars
+debian/mpwrd-menu/
