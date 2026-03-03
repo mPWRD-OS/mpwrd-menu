@@ -16,22 +16,15 @@ Lightweight TUI for mPWRD-OS.
 ## Files
 
 - `mpwrd-menu.sh`: Main TUI script
-- `mesh-apps.conf.example`: Example app list for the Mesh Apps Manager
-- `mesh-services.conf.example`: Example service list for Meshtastic Related Services
+- `mesh-apps.conf`: App list for the Mesh Apps Manager
+- `mesh-services.conf`: Service list for Meshtastic Related Services
 
 ## Install
 
 ```bash
-git clone https://github.com/Ruledo/mpwrd-menu.git
+git clone https://github.com/mPWRD-OS/mpwrd-menu.git
 cd mpwrd-menu
 chmod +x mpwrd-menu.sh
-```
-
-Optional local app list override:
-
-```bash
-cp mesh-apps.conf.example mesh-apps.conf
-cp mesh-services.conf.example mesh-services.conf
 ```
 
 ## Run
@@ -46,7 +39,7 @@ cp mesh-services.conf.example mesh-services.conf
 - Some actions rely on system tools already expected on the target OS, such as `systemctl`, `apt-get`, `nmtui`, `pipx`, `curl` or `wget`, `gpg`, and `sudo`.
 - `Network Quick Start` runs `nmtui` and returns directly to the menu when finished.
 - `Contact` in the main menu runs the `contact` command directly.
-- `Mesh Apps Manager` reads `mesh-apps.conf` first, then falls back to `mesh-apps.conf.example`.
+- `Mesh Apps Manager` reads `mesh-apps.conf`.
 - App manager types supported in `mesh-apps.conf` are `apt`, `pipx`, and `pipx-global`.
-- `Meshtastic Related Services` reads `mesh-services.conf` first, then falls back to `mesh-services.conf.example`.
+- `Meshtastic Related Services` reads `mesh-services.conf`.
 - Board configs are copied from `/etc/meshtasticd/available.d/` into `/etc/meshtasticd/config.d/`.

@@ -3,12 +3,8 @@
 set -u
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly APP_REGISTRY_DEFAULT="$SCRIPT_DIR/mesh-apps.conf"
-readonly APP_REGISTRY_EXAMPLE="$SCRIPT_DIR/mesh-apps.conf.example"
-readonly APP_REGISTRY="${APP_REGISTRY:-$APP_REGISTRY_DEFAULT}"
-readonly SERVICE_REGISTRY_DEFAULT="$SCRIPT_DIR/mesh-services.conf"
-readonly SERVICE_REGISTRY_EXAMPLE="$SCRIPT_DIR/mesh-services.conf.example"
-readonly SERVICE_REGISTRY="${SERVICE_REGISTRY:-$SERVICE_REGISTRY_DEFAULT}"
+readonly APP_REGISTRY="${APP_REGISTRY:-$SCRIPT_DIR/mesh-apps.conf}"
+readonly SERVICE_REGISTRY="${SERVICE_REGISTRY:-$SCRIPT_DIR/mesh-services.conf}"
 readonly MESHTASTIC_PACKAGE="meshtasticd"
 readonly MESHTASTIC_DEBIAN_SERIES="Debian_13"
 readonly REPO_CHANNELS=("beta" "alpha" "daily")
@@ -274,17 +270,6 @@ append_array() {
   array_ref+=("$2")
 }
 
-resolve_registry_source() {
-  local source_file="$1"
-  local example_file="$2"
-
-  if [[ ! -f "$source_file" && -f "$example_file" ]]; then
-    printf '%s' "$example_file"
-  else
-    printf '%s' "$source_file"
-  fi
-}
-
 load_delimited_records() {
   local source_file="$1"
   shift
@@ -328,12 +313,12 @@ load_delimited_records() {
 }
 
 load_app_registry() {
-  load_delimited_records "$(resolve_registry_source "$APP_REGISTRY" "$APP_REGISTRY_EXAMPLE")" \
+  load_delimited_records "$APP_REGISTRY" \
     APP_LABELS APP_MANAGERS APP_PACKAGES
 }
 
 load_service_registry() {
-  load_delimited_records "$(resolve_registry_source "$SERVICE_REGISTRY" "$SERVICE_REGISTRY_EXAMPLE")" \
+  load_delimited_records "$SERVICE_REGISTRY" \
     SERVICE_LABELS SERVICE_UNITS
 }
 
@@ -664,7 +649,7 @@ service_menu() {
 related_services_menu() {
   load_service_registry
   if (( ${#SERVICE_LABELS[@]} == 0 )); then
-    message_box "No services are configured. Add entries to $SERVICE_REGISTRY or $SERVICE_REGISTRY_EXAMPLE."
+    message_box "No services are configured. Add entries to $SERVICE_REGISTRY."
     return 0
   fi
 
@@ -732,7 +717,7 @@ app_action_menu() {
 mesh_apps_menu() {
   load_app_registry
   if (( ${#APP_LABELS[@]} == 0 )); then
-    message_box "No mesh apps are configured. Add entries to $APP_REGISTRY or $APP_REGISTRY_EXAMPLE."
+    message_box "No mesh apps are configured. Add entries to $APP_REGISTRY."
     return 0
   fi
 
