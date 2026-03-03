@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 if (( $# < 4 )); then
@@ -18,9 +18,12 @@ LABEL="${APT_REPO_LABEL:-mPWRD-OS}"
 ARCHITECTURES="${APT_REPO_ARCHITECTURES:-all}"
 KEY_ID="${GPG_SIGNING_KEY_ID:-$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr:/ { print $10; exit }')}"
 GPG_PASSPHRASE="${GPG_PASSPHRASE:-}"
-POOL_DIR="${REPO_DIR}/pool/${SUITE}/${COMPONENT}/m/mpwrd-menu"
-BINARY_DIR="${REPO_DIR}/dists/${SUITE}/${COMPONENT}/binary-all"
-RELEASE_DIR="${REPO_DIR}/dists/${SUITE}"
+REL_POOL_DIR="pool/${SUITE}/${COMPONENT}/m/mpwrd-menu"
+REL_BINARY_DIR="dists/${SUITE}/${COMPONENT}/binary-all"
+REL_RELEASE_DIR="dists/${SUITE}"
+POOL_DIR="${REPO_DIR}/${REL_POOL_DIR}"
+BINARY_DIR="${REPO_DIR}/${REL_BINARY_DIR}"
+RELEASE_DIR="${REPO_DIR}/${REL_RELEASE_DIR}"
 
 mkdir -p "${POOL_DIR}" "${BINARY_DIR}"
 touch "${REPO_DIR}/.nojekyll"
@@ -29,18 +32,22 @@ cp -f "${PUBLIC_KEY_PATH}" "${REPO_DIR}/mpwrd-archive-keyring.gpg"
 rm -f "${POOL_DIR}"/*.deb
 cp -f "${DEB_FILES[@]}" "${POOL_DIR}/"
 
-dpkg-scanpackages --arch all "${POOL_DIR}" /dev/null > "${BINARY_DIR}/Packages"
-gzip -9nkf "${BINARY_DIR}/Packages"
-xz -9efk "${BINARY_DIR}/Packages"
+(
+  cd "${REPO_DIR}"
 
-apt-ftparchive \
-  -o "APT::FTPArchive::Release::Origin=${ORIGIN}" \
-  -o "APT::FTPArchive::Release::Label=${LABEL}" \
-  -o "APT::FTPArchive::Release::Suite=${SUITE}" \
-  -o "APT::FTPArchive::Release::Codename=${SUITE}" \
-  -o "APT::FTPArchive::Release::Architectures=${ARCHITECTURES}" \
-  -o "APT::FTPArchive::Release::Components=${COMPONENT}" \
-  release "${RELEASE_DIR}" > "${RELEASE_DIR}/Release"
+  dpkg-scanpackages --arch all "${REL_POOL_DIR}" /dev/null > "${REL_BINARY_DIR}/Packages"
+  gzip -9nkf "${REL_BINARY_DIR}/Packages"
+  xz -9efk "${REL_BINARY_DIR}/Packages"
+
+  apt-ftparchive \
+    -o "APT::FTPArchive::Release::Origin=${ORIGIN}" \
+    -o "APT::FTPArchive::Release::Label=${LABEL}" \
+    -o "APT::FTPArchive::Release::Suite=${SUITE}" \
+    -o "APT::FTPArchive::Release::Codename=${SUITE}" \
+    -o "APT::FTPArchive::Release::Architectures=${ARCHITECTURES}" \
+    -o "APT::FTPArchive::Release::Components=${COMPONENT}" \
+    release "${REL_RELEASE_DIR}" > "${REL_RELEASE_DIR}/Release"
+)
 
 GPG_ARGS=(--batch --yes --pinentry-mode loopback --default-key "${KEY_ID}")
 if [[ -n "${GPG_PASSPHRASE}" ]]; then
