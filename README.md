@@ -27,6 +27,38 @@ cd mpwrd-menu
 chmod +x mpwrd-menu.sh
 ```
 
+## Debian Package
+
+Use this Deb822 source file for the published APT repo:
+
+```deb822
+Types: deb
+URIs: https://mpwrd-os.github.io/mpwrd-menu
+Suites: testing
+Components: main
+Architectures: all
+Signed-By: /usr/share/keyrings/mpwrd-archive-keyring.gpg
+```
+
+Install from the testing channel:
+
+```bash
+curl -fsSL https://mpwrd-os.github.io/mpwrd-menu/mpwrd-archive-keyring.gpg \
+  | sudo tee /usr/share/keyrings/mpwrd-archive-keyring.gpg > /dev/null
+
+sudo tee /etc/apt/sources.list.d/mpwrd-menu.sources > /dev/null <<'EOF'
+Types: deb
+URIs: https://mpwrd-os.github.io/mpwrd-menu
+Suites: testing
+Components: main
+Architectures: all
+Signed-By: /usr/share/keyrings/mpwrd-archive-keyring.gpg
+EOF
+
+sudo apt update
+sudo apt install mpwrd-menu
+```
+
 ## Run
 
 ```bash
