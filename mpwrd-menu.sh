@@ -11,6 +11,7 @@ readonly REPO_CHANNELS=("beta" "alpha" "daily")
 readonly PIPX_GLOBAL_HOME="/opt/pipx"
 readonly PIPX_GLOBAL_BIN_DIR="/usr/local/bin"
 readonly PIPX_GLOBAL_MAN_DIR="/usr/local/share/man"
+readonly PIPX_TMP_THRESHOLD_KB=65536
 readonly AVAILABLE_CONFIG_DIR="/etc/meshtasticd/available.d"
 readonly ACTIVE_CONFIG_DIR="/etc/meshtasticd/config.d"
 
@@ -554,7 +555,7 @@ manage_app_action() {
         return 1
       fi
 
-      run_and_pause "${verb} ${label}..." pipx "$action" "$package"
+      run_and_pause "${verb} ${label}..." run_pipx_action "$action" "$package" user
       ;;
     pipx-global)
       if ! command_exists pipx; then
@@ -595,11 +596,59 @@ run_pipx_global_action() {
   local action="$1"
   local package="$2"
 
-  as_root env \
-    PIPX_HOME="$PIPX_GLOBAL_HOME" \
-    PIPX_BIN_DIR="$PIPX_GLOBAL_BIN_DIR" \
-    PIPX_MAN_DIR="$PIPX_GLOBAL_MAN_DIR" \
-    pipx "$action" "$package"
+  run_pipx_action "$action" "$package" root
+}
+
+tmp_free_kb() {
+  local path="$1"
+  df -Pk "$path" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+
+run_pipx_action() {
+  local action="$1"
+  local package="$2"
+  local scope="${3:-user}"
+  local free_kb=""
+  local temp_dir=""
+  local rc=0
+
+  free_kb="$(tmp_free_kb /tmp)"
+  if [[ -n "$free_kb" && "$free_kb" =~ ^[0-9]+$ && "$free_kb" -lt "$PIPX_TMP_THRESHOLD_KB" ]]; then
+    temp_dir="$(mktemp -d /var/tmp/mpwrd-menu-pipx.XXXXXX)"
+  fi
+
+  if [[ "$scope" == "root" ]]; then
+    if [[ -n "$temp_dir" ]]; then
+      as_root env \
+        TMPDIR="$temp_dir" \
+        PIPX_HOME="$PIPX_GLOBAL_HOME" \
+        PIPX_BIN_DIR="$PIPX_GLOBAL_BIN_DIR" \
+        PIPX_MAN_DIR="$PIPX_GLOBAL_MAN_DIR" \
+        pipx "$action" "$package"
+      rc=$?
+    else
+      as_root env \
+        PIPX_HOME="$PIPX_GLOBAL_HOME" \
+        PIPX_BIN_DIR="$PIPX_GLOBAL_BIN_DIR" \
+        PIPX_MAN_DIR="$PIPX_GLOBAL_MAN_DIR" \
+        pipx "$action" "$package"
+      rc=$?
+    fi
+  else
+    if [[ -n "$temp_dir" ]]; then
+      env TMPDIR="$temp_dir" pipx "$action" "$package"
+      rc=$?
+    else
+      pipx "$action" "$package"
+      rc=$?
+    fi
+  fi
+
+  if [[ -n "$temp_dir" ]]; then
+    rm -rf "$temp_dir"
+  fi
+
+  return "$rc"
 }
 
 indexed_list_menu() {
