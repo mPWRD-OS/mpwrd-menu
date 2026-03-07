@@ -85,4 +85,4 @@ jobs:
           osc addremove
 
           # Commit changes and push to OpenSUSE Build Service
-          osc commit -m "GitHub Actions: ${{ github.sha }}"
+          osc commit -m "GitHub Actions: ${{ github.sha }}\n${{ github.event.head_commit.message }}"
