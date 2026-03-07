@@ -4,7 +4,7 @@ Lightweight TUI for mPWRD-OS.
 
 ## Overview
 
-`mpwrd-menu` is a dependency-free Bash menu for minimal console images. It provides:
+`mpwrd-menu` is a lightweight Bash menu for minimal console images. It provides:
 
 - `Contact`
 - `Meshtastic Related Services`

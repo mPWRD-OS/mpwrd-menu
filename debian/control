@@ -9,8 +9,14 @@ Homepage: https://github.com/mPWRD-OS/mpwrd-menu
 
 Package: mpwrd-menu
 Architecture: all
-Depends: ${misc:Depends}
+Depends: ${misc:Depends},
+         sudo,
+         bash,
+         gpg,
+         curl,
+         wget,
+         pipx
 Description: Bash TUI for Meshtastic tasks on mPWRD-OS
- A dependency-free terminal menu for mPWRD-OS images that provides
+ A lightweight terminal menu for mPWRD-OS images that provides
  quick access to Meshtastic services, package actions, network setup,
  and board configuration tasks.
