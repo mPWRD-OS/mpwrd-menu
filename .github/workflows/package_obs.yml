@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - developer
   workflow_dispatch:
 
 permissions:
@@ -17,6 +16,8 @@ jobs:
     secrets: inherit
 
   package-obs:
+    # Fork-gating: Only run in the main repo
+    if: github.repository_owner == 'mPWRD-OS'
     runs-on: ubuntu-24.04
     needs: build-debian-src
     steps:
@@ -43,45 +44,45 @@ jobs:
       - name: Display structure of downloaded files
         run: ls -lah
 
-      # - name: Configure osc
-      #   env:
-      #     OBS_USERNAME: vidplace7
-      #   run: |
-      #     # Setup OpenSUSE Build Service credentials
-      #     mkdir -p ~/.config/osc
-      #     echo "[general]" > ~/.config/osc/oscrc
-      #     echo "apiurl=https://api.opensuse.org" >> ~/.config/osc/oscrc
-      #     echo "[https://api.opensuse.org]" >> ~/.config/osc/oscrc
-      #     echo "user=${{ env.OBS_USERNAME }}" >> ~/.config/osc/oscrc
-      #     echo "pass=${{ secrets.OBS_PASSWORD }}" >> ~/.config/osc/oscrc
-      #     echo "credentials_mgr_class=osc.credentials.PlaintextConfigFileCredentialsManager" >> ~/.config/osc/oscrc
-      #     # Create a temporary directory for osc checkout
-      #     mkdir -p osc
+      - name: Configure osc
+        env:
+          OBS_USERNAME: mPWRD
+        run: |
+          # Setup OpenSUSE Build Service credentials
+          mkdir -p ~/.config/osc
+          echo "[general]" > ~/.config/osc/oscrc
+          echo "apiurl=https://api.opensuse.org" >> ~/.config/osc/oscrc
+          echo "[https://api.opensuse.org]" >> ~/.config/osc/oscrc
+          echo "user=${{ env.OBS_USERNAME }}" >> ~/.config/osc/oscrc
+          echo "pass=${{ secrets.OBS_PASSWORD }}" >> ~/.config/osc/oscrc
+          echo "credentials_mgr_class=osc.credentials.PlaintextConfigFileCredentialsManager" >> ~/.config/osc/oscrc
+          # Create a temporary directory for osc checkout
+          mkdir -p osc
 
-      # # Intentionally fail if credentials are invalid
-      # # Update secrets if this returns `401`
-      # - name: Verify OBS authentication
-      #   run: osc token
+      # Intentionally fail if credentials are invalid
+      # Update secrets if this returns `401`
+      - name: Verify OBS authentication
+        run: osc token
 
-      # - name: Upload package to OBS
-      #   shell: bash
-      #   working-directory: osc
-      #   env:
-      #     OBS_PROJECT: ${{ inputs.obs_project }}
-      #     OBS_PACKAGE: meshtasticd
-      #   run: |
-      #     # Initialize the package in the current directory
-      #     osc checkout --output-dir . $OBS_PROJECT $OBS_PACKAGE
+      - name: Upload package to OBS
+        shell: bash
+        working-directory: osc
+        env:
+          OBS_PROJECT: home:mPWRD:OS
+          OBS_PACKAGE: mpwrd-menu
+        run: |
+          # Initialize the package in the current directory
+          osc checkout --output-dir . $OBS_PROJECT $OBS_PACKAGE
 
-      #     # Remove the existing package files
-      #     rm -rf *.dsc *.tar.xz
+          # Remove the existing package files
+          rm -rf *.dsc *.tar.xz
 
-      #     # Copy new package files to the directory
-      #     cp $GITHUB_WORKSPACE/*.dsc .
-      #     cp $GITHUB_WORKSPACE/*.tar.xz .
+          # Copy new package files to the directory
+          cp $GITHUB_WORKSPACE/*.dsc .
+          cp $GITHUB_WORKSPACE/*.tar.xz .
 
-      #     # Add/Remove the files
-      #     osc addremove
+          # Add/Remove the files
+          osc addremove
 
-      #     # Commit changes and push to OpenSUSE Build Service
-      #     osc commit -m "GitHub Actions: ${{ steps.version.outputs.deb }}~${{ inputs.series }}"
+          # Commit changes and push to OpenSUSE Build Service
+          osc commit -m "GitHub Actions: ${{ github.sha }}"
