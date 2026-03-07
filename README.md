@@ -4,7 +4,7 @@ Lightweight TUI for mPWRD-OS.
 
 ## Overview
 
-`mpwrd-menu.sh` is a dependency-free Bash menu for minimal console images. It provides:
+`mpwrd-menu` is a dependency-free Bash menu for minimal console images. It provides:
 
 - `Contact`
 - `Meshtastic Related Services`
@@ -15,7 +15,7 @@ Lightweight TUI for mPWRD-OS.
 
 ## Files
 
-- `mpwrd-menu.sh`: Main TUI script
+- `mpwrd-menu`: Main TUI script
 - `mesh-apps.conf`: App list for the Mesh Apps Manager
 - `mesh-services.conf`: Service list for Meshtastic Related Services
 
@@ -24,7 +24,7 @@ Lightweight TUI for mPWRD-OS.
 ```bash
 git clone https://github.com/mPWRD-OS/mpwrd-menu.git
 cd mpwrd-menu
-chmod +x mpwrd-menu.sh
+chmod +x mpwrd-menu
 ```
 
 ## Debian Package
@@ -64,7 +64,7 @@ sudo apt install mpwrd-menu
 ## Run
 
 ```bash
-./mpwrd-menu.sh
+./mpwrd-menu
 ```
 
 ## Notes
