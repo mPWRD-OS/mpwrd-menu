@@ -3,8 +3,8 @@
 set -u
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly APP_REGISTRY="${APP_REGISTRY:-$SCRIPT_DIR/mesh-apps.conf}"
-readonly SERVICE_REGISTRY="${SERVICE_REGISTRY:-$SCRIPT_DIR/mesh-services.conf}"
+readonly APP_REGISTRY="${APP_REGISTRY:-/usr/share/mpwrd-menu/mesh-apps.conf}"
+readonly SERVICE_REGISTRY="${SERVICE_REGISTRY:-/usr/share/mpwrd-menu/mesh-services.conf}"
 readonly MESHTASTIC_PACKAGE="meshtasticd"
 readonly MESHTASTIC_DEBIAN_SERIES="Debian_13"
 readonly REPO_CHANNELS=("beta" "alpha" "daily")
