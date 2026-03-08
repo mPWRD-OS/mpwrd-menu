@@ -1,31 +1,133 @@
 name: Package for OpenSUSE Build Service
 
 on:
-  push:
+  pull_request_target:
+    types:
+      - closed
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to release
+        required: false
+        default: main
+        type: string
+      release_message:
+        description: Optional changelog text override
+        required: false
+        type: string
 
 permissions:
   contents: write
   packages: write
 
+concurrency:
+  group: obs-release
+  cancel-in-progress: false
+
 jobs:
+  prepare-release:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-24.04
+    outputs:
+      checkout_ref: ${{ steps.metadata.outputs.checkout_ref }}
+      release_message: ${{ steps.metadata.outputs.release_message }}
+      release_sha: ${{ steps.metadata.outputs.release_sha }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      release_version: ${{ steps.metadata.outputs.release_version }}
+      should_release: ${{ steps.metadata.outputs.should_release }}
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || inputs.ref || 'main' }}
+
+      - name: Derive release metadata
+        id: metadata
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_RELEASE_MESSAGE: ${{ inputs.release_message || '' }}
+          PR_TITLE: ${{ github.event.pull_request.title || '' }}
+        run: |
+          set -euo pipefail
+
+          release_sha="$(git rev-parse HEAD)"
+          existing_tag="$(git tag --points-at "$release_sha" 'v*' | sort -V | tail -n1 || true)"
+
+          if [[ -n "$existing_tag" ]]; then
+            echo "checkout_ref=$release_sha" >> "$GITHUB_OUTPUT"
+            echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+            echo "release_tag=$existing_tag" >> "$GITHUB_OUTPUT"
+            echo "release_version=${existing_tag#v}" >> "$GITHUB_OUTPUT"
+            {
+              printf 'release_message<<__EOF__\n%s\n__EOF__\n' "Release already tagged as ${existing_tag}."
+            } >> "$GITHUB_OUTPUT"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          latest_tag="$(git tag -l 'v*' | sort -V | tail -n1 || true)"
+          if [[ -n "$latest_tag" ]]; then
+            base_version="${latest_tag#v}"
+          else
+            base_version="$(dpkg-parsechangelog -SVersion)"
+          fi
+
+          if [[ ! "$base_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            printf 'Expected release version to match X.Y.Z, got %s\n' "$base_version" >&2
+            exit 1
+          fi
+
+          release_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$(( BASH_REMATCH[3] + 1 ))"
+
+          if [[ "$EVENT_NAME" == "pull_request_target" ]]; then
+            release_message="$PR_TITLE"
+          elif [[ -n "$INPUT_RELEASE_MESSAGE" ]]; then
+            release_message="$INPUT_RELEASE_MESSAGE"
+          else
+            release_message="$(git log -1 --pretty=%s)"
+          fi
+
+          if [[ -z "$release_message" ]]; then
+            echo "Release message cannot be empty." >&2
+            exit 1
+          fi
+
+          echo "checkout_ref=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v${release_version}" >> "$GITHUB_OUTPUT"
+          echo "release_version=$release_version" >> "$GITHUB_OUTPUT"
+          {
+            printf 'release_message<<__EOF__\n%s\n__EOF__\n' "$release_message"
+          } >> "$GITHUB_OUTPUT"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+
   build-debian-src:
+    if: needs.prepare-release.outputs.should_release == 'true'
+    needs: prepare-release
     uses: ./.github/workflows/build_debian_src.yml
+    with:
+      checkout_ref: ${{ needs.prepare-release.outputs.checkout_ref }}
+      release_message: ${{ needs.prepare-release.outputs.release_message }}
+      release_version: ${{ needs.prepare-release.outputs.release_version }}
     secrets: inherit
 
   package-obs:
     # Fork-gating: Only run in the main repo
-    if: github.repository_owner == 'mPWRD-OS'
+    if: github.repository_owner == 'mPWRD-OS' && needs.prepare-release.outputs.should_release == 'true'
     runs-on: ubuntu-24.04
-    needs: build-debian-src
+    needs:
+      - prepare-release
+      - build-debian-src
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          submodules: recursive
           path: mpwrd-menu
+          ref: ${{ needs.prepare-release.outputs.checkout_ref }}
 
       - name: Install OpenSUSE Build Service deps
         shell: bash
@@ -70,6 +172,8 @@ jobs:
         env:
           OBS_PROJECT: home:mPWRD:OS
           OBS_PACKAGE: mpwrd-menu
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
         run: |
           # Initialize the package in the current directory
           osc checkout --output-dir . $OBS_PROJECT $OBS_PACKAGE
@@ -85,4 +189,26 @@ jobs:
           osc addremove
 
           # Commit changes and push to OpenSUSE Build Service
-          osc commit -m "GitHub Actions: ${{ github.sha }}"
+          osc commit -m "GitHub Actions: ${RELEASE_TAG} from ${RELEASE_SHA}"
+
+      - name: Create release tag
+        shell: bash
+        working-directory: mpwrd-menu
+        env:
+          RELEASE_SHA: ${{ needs.prepare-release.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+        run: |
+          existing_sha="$(git rev-list -n 1 "${RELEASE_TAG}" 2>/dev/null || true)"
+          if [[ -n "$existing_sha" ]]; then
+            if [[ "$existing_sha" == "$RELEASE_SHA" ]]; then
+              exit 0
+            fi
+
+            printf 'Tag %s already exists on %s, expected %s.\n' "${RELEASE_TAG}" "${existing_sha}" "${RELEASE_SHA}" >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${RELEASE_TAG}" "${RELEASE_SHA}"
+          git push origin "refs/tags/${RELEASE_TAG}"
