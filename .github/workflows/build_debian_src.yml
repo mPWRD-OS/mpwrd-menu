@@ -2,6 +2,16 @@ name: Build Debian Source Package
 
 on:
   workflow_call:
+    inputs:
+      checkout_ref:
+        required: false
+        type: string
+      release_message:
+        required: false
+        type: string
+      release_version:
+        required: false
+        type: string
   pull_request:
   workflow_dispatch:
 
@@ -16,7 +26,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           path: mpwrd-menu
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       - name: Install deps
         shell: bash
@@ -25,6 +37,22 @@ jobs:
           sudo apt-get update -y --fix-missing
           sudo apt-get install -y software-properties-common build-essential devscripts equivs
           sudo mk-build-deps --install --remove --tool='apt-get -o Debug::pkgProblemResolver=yes --no-install-recommends --yes' debian/control
+
+      - name: Prepare release changelog
+        if: inputs.release_version != '' && inputs.release_message != ''
+        shell: bash
+        working-directory: mpwrd-menu
+        env:
+          RELEASE_MESSAGE: ${{ inputs.release_message }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          dch -M -v "${RELEASE_VERSION}" "${RELEASE_MESSAGE}"
+          dch -M --release --distribution unstable ""
+
+      - name: Show release changelog
+        if: inputs.release_version != '' && inputs.release_message != ''
+        working-directory: mpwrd-menu
+        run: sed -n '1,8p' debian/changelog
 
       - name: Package debian source
         working-directory: mpwrd-menu
