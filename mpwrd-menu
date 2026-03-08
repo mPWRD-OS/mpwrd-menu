@@ -8,9 +8,6 @@ readonly SERVICE_REGISTRY="${SERVICE_REGISTRY:-/usr/share/mpwrd-menu/mesh-servic
 readonly MESHTASTIC_PACKAGE="meshtasticd"
 readonly MESHTASTIC_DEBIAN_SERIES="Debian_13"
 readonly REPO_CHANNELS=("beta" "alpha" "daily")
-readonly PIPX_GLOBAL_HOME="/opt/pipx"
-readonly PIPX_GLOBAL_BIN_DIR="/usr/local/bin"
-readonly PIPX_GLOBAL_MAN_DIR="/usr/local/share/man"
 readonly PIPX_TMP_THRESHOLD_KB=65536
 readonly AVAILABLE_CONFIG_DIR="/etc/meshtasticd/available.d"
 readonly ACTIVE_CONFIG_DIR="/etc/meshtasticd/config.d"
@@ -575,6 +572,8 @@ manage_app_action() {
 resolve_pipx_manager() {
   local package="$1"
   local command_path=""
+  local global_bin_dir=""
+  local global_home=""
   local resolved_path=""
 
   command_path="$(command -v "$package" 2>/dev/null || true)"
@@ -583,8 +582,18 @@ resolve_pipx_manager() {
     return 0
   fi
 
+  if command_exists pipx; then
+    global_bin_dir="$(pipx --global environment --value PIPX_GLOBAL_BIN_DIR 2>/dev/null || true)"
+    global_home="$(pipx --global environment --value PIPX_GLOBAL_HOME 2>/dev/null || true)"
+  fi
+
   resolved_path="$(readlink -f "$command_path" 2>/dev/null || printf '%s' "$command_path")"
-  if [[ "$command_path" == /usr/local/bin/* || "$resolved_path" == /opt/pipx/venvs/* ]]; then
+  if [[ -n "$global_bin_dir" && "$command_path" == "$global_bin_dir"/* ]]; then
+    printf 'pipx-global'
+    return 0
+  fi
+
+  if [[ -n "$global_home" && "$resolved_path" == "$global_home"/venvs/* ]]; then
     printf 'pipx-global'
     return 0
   fi
@@ -621,17 +630,10 @@ run_pipx_action() {
     if [[ -n "$temp_dir" ]]; then
       as_root env \
         TMPDIR="$temp_dir" \
-        PIPX_HOME="$PIPX_GLOBAL_HOME" \
-        PIPX_BIN_DIR="$PIPX_GLOBAL_BIN_DIR" \
-        PIPX_MAN_DIR="$PIPX_GLOBAL_MAN_DIR" \
-        pipx "$action" "$package"
+        pipx --global "$action" "$package"
       rc=$?
     else
-      as_root env \
-        PIPX_HOME="$PIPX_GLOBAL_HOME" \
-        PIPX_BIN_DIR="$PIPX_GLOBAL_BIN_DIR" \
-        PIPX_MAN_DIR="$PIPX_GLOBAL_MAN_DIR" \
-        pipx "$action" "$package"
+      as_root pipx --global "$action" "$package"
       rc=$?
     fi
   else
