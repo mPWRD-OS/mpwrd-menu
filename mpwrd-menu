@@ -667,10 +667,10 @@ run_pipx_action() {
     if [[ -n "$temp_dir" ]]; then
       as_root env \
         TMPDIR="$temp_dir" \
-        pipx --global "$action" "$package"
+        pipx "$action" --global "$package"
       rc=$?
     else
-      as_root pipx --global "$action" "$package"
+      as_root pipx "$action" --global "$package"
       rc=$?
     fi
   else
