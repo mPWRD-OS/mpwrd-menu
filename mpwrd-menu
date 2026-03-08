@@ -569,12 +569,37 @@ manage_app_action() {
   esac
 }
 
+pipx_layout_path() {
+  local scope="$1"
+  local key="$2"
+
+  python3 - "$scope" "$key" 2>/dev/null <<'PY' || true
+import sys
+from pipx import paths
+
+scope, key = sys.argv[1:]
+ctx = paths.ctx
+
+if scope == "global":
+    ctx.make_global()
+
+values = {
+    "bin": ctx.bin_dir,
+    "home": ctx.home,
+}
+
+print(values[key])
+PY
+}
+
 resolve_pipx_manager() {
   local package="$1"
   local command_path=""
   local global_bin_dir=""
   local global_home=""
   local resolved_path=""
+  local user_bin_dir=""
+  local user_home=""
 
   command_path="$(command -v "$package" 2>/dev/null || true)"
   if [[ -z "$command_path" ]]; then
@@ -582,12 +607,24 @@ resolve_pipx_manager() {
     return 0
   fi
 
-  if command_exists pipx; then
-    global_bin_dir="$(pipx --global environment --value PIPX_GLOBAL_BIN_DIR 2>/dev/null || true)"
-    global_home="$(pipx --global environment --value PIPX_GLOBAL_HOME 2>/dev/null || true)"
+  if command_exists python3; then
+    user_bin_dir="$(pipx_layout_path user bin)"
+    user_home="$(pipx_layout_path user home)"
+    global_bin_dir="$(pipx_layout_path global bin)"
+    global_home="$(pipx_layout_path global home)"
   fi
 
   resolved_path="$(readlink -f "$command_path" 2>/dev/null || printf '%s' "$command_path")"
+  if [[ -n "$user_bin_dir" && "$command_path" == "$user_bin_dir"/* ]]; then
+    printf 'pipx'
+    return 0
+  fi
+
+  if [[ -n "$user_home" && "$resolved_path" == "$user_home"/venvs/* ]]; then
+    printf 'pipx'
+    return 0
+  fi
+
   if [[ -n "$global_bin_dir" && "$command_path" == "$global_bin_dir"/* ]]; then
     printf 'pipx-global'
     return 0
