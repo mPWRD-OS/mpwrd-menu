@@ -44,9 +44,6 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || inputs.ref || 'main' }}
 
-      - name: Fetch tags
-        run: git fetch --force --tags origin
-
       - name: Derive release metadata
         id: metadata
         shell: bash
@@ -129,7 +126,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
           path: mpwrd-menu
           ref: ${{ needs.prepare-release.outputs.checkout_ref }}
 
@@ -142,7 +138,7 @@ jobs:
           sudo apt-get install -y osc
 
       - name: Download artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v7
         with:
           name: mpwrd-menu-src
           merge-multiple: true
