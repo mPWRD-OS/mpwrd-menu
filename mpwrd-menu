@@ -236,17 +236,20 @@ run_terminal_program() {
 
 apt_package_action() {
   local action="$1"
-  local package="$2"
+  local package_spec="$2"
+  local packages=()
+
+  read -r -a packages <<< "$package_spec"
 
   case "$action" in
     install)
-      as_root apt-get update && as_root apt-get install -y "$package"
+      as_root apt-get update && as_root apt-get install -y "${packages[@]}"
       ;;
     upgrade)
-      as_root apt-get update && as_root apt-get install --only-upgrade -y "$package"
+      as_root apt-get update && as_root apt-get install --only-upgrade -y "${packages[@]}"
       ;;
     uninstall)
-      as_root apt-get remove -y "$package"
+      as_root apt-get remove -y "${packages[@]}"
       ;;
   esac
 }
