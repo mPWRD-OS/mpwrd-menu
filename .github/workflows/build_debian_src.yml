@@ -2,6 +2,9 @@ name: Build Debian Source Package
 
 on:
   workflow_call:
+  push:
+    branches:
+      - developer
   pull_request:
   workflow_dispatch:
 
