@@ -12,6 +12,7 @@ Architecture: all
 Depends: ${misc:Depends},
          sudo,
          bash,
+         python3,
          gpg,
          curl,
          wget,
