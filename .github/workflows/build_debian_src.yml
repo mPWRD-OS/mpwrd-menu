@@ -30,13 +30,34 @@ jobs:
           sudo mk-build-deps --install --remove --tool='apt-get -o Debug::pkgProblemResolver=yes --no-install-recommends --yes' debian/control
 
       - name: Package debian source
+        if: github.event_name == 'workflow_call'
         working-directory: mpwrd-menu
         run: debuild -S -nc -us -uc
 
-      - name: Store binaries as an artifact
+      - name: Upload source package artifact
+        if: github.event_name == 'workflow_call'
         uses: actions/upload-artifact@v7
         with:
           name: mpwrd-menu-src
           overwrite: true
           path: |
-            mpwrd-menu_*
+            mpwrd-menu_*.dsc
+            mpwrd-menu_*.debian.tar.xz
+            mpwrd-menu_*.tar.xz
+            mpwrd-menu_*.changes
+
+      - name: Package binary deb
+        if: github.event_name != 'workflow_call'
+        working-directory: mpwrd-menu
+        run: debuild -b -nc -us -uc
+
+      - name: Upload binary deb artifact
+        if: github.event_name != 'workflow_call'
+        uses: actions/upload-artifact@v7
+        with:
+          name: mpwrd-menu-deb
+          overwrite: true
+          path: |
+            mpwrd-menu_*.deb
+            mpwrd-menu_*.buildinfo
+            mpwrd-menu_*.changes
