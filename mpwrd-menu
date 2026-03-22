@@ -836,7 +836,7 @@ main_menu() {
     menu_choose 'Main Menu' 'Lightweight TUI for mPWRD-OS.' options || return 0
     case "$MENU_RESULT" in
       0)
-        run_terminal_program pause contact
+        run_terminal_program pause contact -c
         ;;
       1)
         related_services_menu
