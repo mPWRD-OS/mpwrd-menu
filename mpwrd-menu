@@ -796,6 +796,79 @@ board_config_file_menu() {
   done
 }
 
+find_compatible_configs() {
+  local directory="$1"
+  local query="$2"
+  local result_files_name="$3"
+  local result_labels_name="$4"
+  local -n result_files_ref="$result_files_name"
+  local -n result_labels_ref="$result_labels_name"
+  local file name
+
+  result_files_ref=()
+  result_labels_ref=()
+
+  [[ -d "$directory" ]] || return 0
+
+  while IFS= read -r file; do
+    if yq -e --arg q "$query" '.Meta.compatible[] | select(. == $q)' "$file" >/dev/null 2>&1; then
+      name="$(yq -r '.Meta.name // "unknown"' "$file" 2>/dev/null)"
+      result_files_ref+=("${file#"$directory/"}")
+      result_labels_ref+=("$name")
+    fi
+  done < <(find "$directory" -mindepth 1 -type f 2>/dev/null | sort)
+}
+
+apply_board_config_menu() {
+  local query
+  local config_files=()
+  local config_labels=()
+  local options=()
+  local default_query=""
+
+  local board_value
+  board_value="$(. /etc/armbian-release 2>/dev/null && printf '%s' "$BOARD")" || true
+  case "$board_value" in
+    "")      ;;
+    rpi4b)   default_query="raspberry-pi" ;;
+    *)       default_query="$board_value" ;;
+  esac
+
+  if ! command_exists yq; then
+    message_box 'yq is required for board config search.'
+    return 1
+  fi
+
+  show_cursor
+  clear_screen
+  printf 'Enter compatible board search query [%s]: ' "$default_query"
+  read -r query
+  hide_cursor
+
+  if [[ -z "$query" ]]; then
+    query="$default_query"
+  fi
+
+  find_compatible_configs "$AVAILABLE_CONFIG_DIR" "$query" config_files config_labels
+
+  if (( ${#config_files[@]} == 0 )); then
+    message_box "No compatible configs found for '$query' in $AVAILABLE_CONFIG_DIR"
+    return 0
+  fi
+
+  options=("${config_labels[@]}" "Back")
+
+  while true; do
+    menu_choose 'Apply Board Config' "Compatible with: $query" options || return 0
+    if (( MENU_RESULT == ${#config_files[@]} )); then
+      return 0
+    fi
+
+    apply_board_config "${config_files[$MENU_RESULT]}"
+    return 0
+  done
+}
+
 board_config_menu() {
   local options=("Apply available config" "Remove active config" "Back")
 
@@ -803,8 +876,7 @@ board_config_menu() {
     menu_choose 'Board Config' 'Copy configs from available.d into config.d or remove active configs.' options || return 0
     case "$MENU_RESULT" in
       0)
-        board_config_file_menu 'Apply Board Config' "$AVAILABLE_CONFIG_DIR" \
-          "No configs found in $AVAILABLE_CONFIG_DIR" apply_board_config
+        apply_board_config_menu
         ;;
       1)
         board_config_file_menu 'Remove Board Config' "$ACTIVE_CONFIG_DIR" \
