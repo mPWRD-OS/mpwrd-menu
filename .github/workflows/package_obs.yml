@@ -1,9 +1,7 @@
 name: Package for OpenSUSE Build Service
 
 on:
-  pull_request_target:
-    types:
-      - closed
+  push:
     branches:
       - main
   workflow_dispatch:
@@ -28,7 +26,7 @@ concurrency:
 
 jobs:
   prepare-release:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-24.04
     outputs:
       checkout_ref: ${{ steps.metadata.outputs.checkout_ref }}
@@ -42,7 +40,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.merge_commit_sha || inputs.ref || 'main' }}
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Derive release metadata
         id: metadata
@@ -50,7 +48,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_RELEASE_MESSAGE: ${{ inputs.release_message || '' }}
-          PR_TITLE: ${{ github.event.pull_request.title || '' }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || '' }}
         run: |
           set -euo pipefail
 
@@ -83,8 +81,8 @@ jobs:
 
           release_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$(( BASH_REMATCH[3] + 1 ))"
 
-          if [[ "$EVENT_NAME" == "pull_request_target" ]]; then
-            release_message="$PR_TITLE"
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            release_message="$COMMIT_MESSAGE"
           elif [[ -n "$INPUT_RELEASE_MESSAGE" ]]; then
             release_message="$INPUT_RELEASE_MESSAGE"
           else
