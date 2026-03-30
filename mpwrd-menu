@@ -41,6 +41,38 @@ clear_screen() {
   printf '\033[2J\033[H'
 }
 
+terminal_rows() {
+  local rows=""
+  local cols=""
+
+  if command_exists tput; then
+    rows="$(tput lines 2>/dev/null || true)"
+  fi
+
+  if [[ ! "$rows" =~ ^[0-9]+$ ]] && read -r rows cols < <(stty size 2>/dev/null); then
+    :
+  fi
+
+  if [[ ! "$rows" =~ ^[0-9]+$ ]] || (( rows < 12 )); then
+    rows=24
+  fi
+
+  printf '%s' "$rows"
+}
+
+menu_window_size() {
+  local rows=0
+  local window_size=0
+
+  rows="$(terminal_rows)"
+  window_size=$(( rows - 10 ))
+  if (( window_size < 4 )); then
+    window_size=4
+  fi
+
+  printf '%s' "$window_size"
+}
+
 pause_prompt() {
   printf '\nPress Enter to continue...'
   read -r _
@@ -74,16 +106,16 @@ read_key() {
   fi
 
   case "$key" in
-    $'\e[A'|k|K)
+    $'\e[A')
       READ_KEY="up"
       ;;
-    $'\e[B'|j|J)
+    $'\e[B')
       READ_KEY="down"
       ;;
     ""|$'\n'|$'\r')
       READ_KEY="enter"
       ;;
-    q|Q|$'\e')
+    $'\e')
       READ_KEY="quit"
       ;;
     *)
@@ -98,7 +130,31 @@ render_menu() {
   local selected="$3"
   local options_name="$4"
   local -n options_ref="$options_name"
-  local i
+  local count=0
+  local end=0
+  local i=0
+  local page_size=0
+  local start=0
+
+  count="${#options_ref[@]}"
+  page_size="$(menu_window_size)"
+  if (( page_size > count )); then
+    page_size="$count"
+  fi
+
+  start=$(( selected - (page_size / 2) ))
+  if (( start < 0 )); then
+    start=0
+  fi
+
+  end=$(( start + page_size ))
+  if (( end > count )); then
+    end="$count"
+    start=$(( end - page_size ))
+    if (( start < 0 )); then
+      start=0
+    fi
+  fi
 
   clear_screen
   printf 'mPWRD-menu\n'
@@ -106,7 +162,11 @@ render_menu() {
   printf '%s\n' "$title"
   printf '%s\n\n' "$prompt"
 
-  for i in "${!options_ref[@]}"; do
+  if (( start > 0 )); then
+    printf '   ...\n'
+  fi
+
+  for (( i = start; i < end; i++ )); do
     if (( i == selected )); then
       printf ' > %s\n' "${options_ref[$i]}"
     else
@@ -114,7 +174,12 @@ render_menu() {
     fi
   done
 
-  printf '\nArrows or j/k to move, Enter to select, q to go back.\n'
+  if (( end < count )); then
+    printf '   ...\n'
+  fi
+
+  printf '\nShowing %d-%d of %d. Arrows to move, Enter to select, Esc to go back.\n' \
+    "$(( start + 1 ))" "$end" "$count"
 }
 
 menu_choose() {
@@ -796,21 +861,107 @@ board_config_file_menu() {
   done
 }
 
+find_compatible_configs() {
+  local directory="$1"
+  local query="$2"
+  local result_files_name="$3"
+  local result_labels_name="$4"
+  local -n result_files_ref="$result_files_name"
+  local -n result_labels_ref="$result_labels_name"
+  local file name relative_path
+
+  result_files_ref=()
+  result_labels_ref=()
+
+  [[ -d "$directory" && -n "$query" ]] || return 0
+
+  while IFS= read -r file; do
+    if yq -e --arg q "$query" '.Meta.compatible[] | select(. == $q)' "$file" >/dev/null 2>&1; then
+      relative_path="${file#"$directory/"}"
+      name="$(yq -r '.Meta.name // ""' "$file" 2>/dev/null)"
+      result_files_ref+=("$relative_path")
+      if [[ -n "$name" ]]; then
+        result_labels_ref+=("$name [$relative_path]")
+      else
+        result_labels_ref+=("$relative_path")
+      fi
+    fi
+  done < <(find "$directory" -mindepth 1 -type f 2>/dev/null | sort)
+}
+
+default_board_config_query() {
+  local board_value=""
+
+  board_value="$(. /etc/armbian-release 2>/dev/null && printf '%s' "$BOARD")" || true
+  case "$board_value" in
+    "")
+      printf ''
+      ;;
+    rpi4b)
+      printf 'raspberry-pi'
+      ;;
+    *)
+      printf '%s' "$board_value"
+      ;;
+  esac
+}
+
+apply_suggested_board_config_menu() {
+  local query=""
+  local config_files=()
+  local config_labels=()
+  local options=()
+
+  query="$(default_board_config_query)"
+
+  if ! command_exists yq; then
+    message_box 'yq is required for suggested board config matching. Use Browse all configs instead.'
+    return 1
+  fi
+
+  if [[ -z "$query" ]]; then
+    message_box 'Could not detect the current board. Use Browse all configs instead.'
+    return 0
+  fi
+
+  find_compatible_configs "$AVAILABLE_CONFIG_DIR" "$query" config_files config_labels
+
+  if (( ${#config_files[@]} == 0 )); then
+    message_box "No suggested configs found for '$query'. Use Browse all configs instead."
+    return 0
+  fi
+
+  options=("${config_labels[@]}" "Back")
+
+  while true; do
+    menu_choose 'Apply Suggested Config' "Detected board: $query" options || return 0
+    if (( MENU_RESULT == ${#config_files[@]} )); then
+      return 0
+    fi
+
+    apply_board_config "${config_files[$MENU_RESULT]}"
+    return 0
+  done
+}
+
 board_config_menu() {
-  local options=("Apply available config" "Remove active config" "Back")
+  local options=("Apply suggested config" "Browse all configs" "Remove active config" "Back")
 
   while true; do
     menu_choose 'Board Config' 'Copy configs from available.d into config.d or remove active configs.' options || return 0
     case "$MENU_RESULT" in
       0)
+        apply_suggested_board_config_menu
+        ;;
+      1)
         board_config_file_menu 'Apply Board Config' "$AVAILABLE_CONFIG_DIR" \
           "No configs found in $AVAILABLE_CONFIG_DIR" apply_board_config
         ;;
-      1)
+      2)
         board_config_file_menu 'Remove Board Config' "$ACTIVE_CONFIG_DIR" \
           "No active configs found in $ACTIVE_CONFIG_DIR" remove_board_config
         ;;
-      2)
+      3)
         return 0
         ;;
     esac
