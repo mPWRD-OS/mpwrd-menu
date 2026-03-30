@@ -8,9 +8,6 @@ readonly SERVICE_REGISTRY="${SERVICE_REGISTRY:-/usr/share/mpwrd-menu/mesh-servic
 readonly MESHTASTIC_PACKAGE="meshtasticd"
 readonly MESHTASTIC_DEBIAN_SERIES="Debian_13"
 readonly REPO_CHANNELS=("beta" "alpha" "daily")
-readonly PIPX_GLOBAL_HOME="/opt/pipx"
-readonly PIPX_GLOBAL_BIN_DIR="/usr/local/bin"
-readonly PIPX_GLOBAL_MAN_DIR="/usr/local/share/man"
 readonly AVAILABLE_CONFIG_DIR="/etc/meshtasticd/available.d"
 readonly ACTIVE_CONFIG_DIR="/etc/meshtasticd/config.d"
 
@@ -239,17 +236,20 @@ run_terminal_program() {
 
 apt_package_action() {
   local action="$1"
-  local package="$2"
+  local package_spec="$2"
+  local packages=()
+
+  read -r -a packages <<< "$package_spec"
 
   case "$action" in
     install)
-      as_root apt-get update && as_root apt-get install -y "$package"
+      as_root apt-get update && as_root apt-get install -y "${packages[@]}"
       ;;
     upgrade)
-      as_root apt-get update && as_root apt-get install --only-upgrade -y "$package"
+      as_root apt-get update && as_root apt-get install --only-upgrade -y "${packages[@]}"
       ;;
     uninstall)
-      as_root apt-get remove -y "$package"
+      as_root apt-get remove -y "${packages[@]}"
       ;;
   esac
 }
@@ -571,10 +571,37 @@ manage_app_action() {
   esac
 }
 
+pipx_layout_path() {
+  local scope="$1"
+  local key="$2"
+
+  python3 - "$scope" "$key" 2>/dev/null <<'PY' || true
+import sys
+from pipx import paths
+
+scope, key = sys.argv[1:]
+ctx = paths.ctx
+
+if scope == "global":
+    ctx.make_global()
+
+values = {
+    "bin": ctx.bin_dir,
+    "home": ctx.home,
+}
+
+print(values[key])
+PY
+}
+
 resolve_pipx_manager() {
   local package="$1"
   local command_path=""
+  local global_bin_dir=""
+  local global_home=""
   local resolved_path=""
+  local user_bin_dir=""
+  local user_home=""
 
   command_path="$(command -v "$package" 2>/dev/null || true)"
   if [[ -z "$command_path" ]]; then
@@ -582,8 +609,30 @@ resolve_pipx_manager() {
     return 0
   fi
 
+  if command_exists python3; then
+    user_bin_dir="$(pipx_layout_path user bin)"
+    user_home="$(pipx_layout_path user home)"
+    global_bin_dir="$(pipx_layout_path global bin)"
+    global_home="$(pipx_layout_path global home)"
+  fi
+
   resolved_path="$(readlink -f "$command_path" 2>/dev/null || printf '%s' "$command_path")"
-  if [[ "$command_path" == /usr/local/bin/* || "$resolved_path" == /opt/pipx/venvs/* ]]; then
+  if [[ -n "$user_bin_dir" && "$command_path" == "$user_bin_dir"/* ]]; then
+    printf 'pipx'
+    return 0
+  fi
+
+  if [[ -n "$user_home" && "$resolved_path" == "$user_home"/venvs/* ]]; then
+    printf 'pipx'
+    return 0
+  fi
+
+  if [[ -n "$global_bin_dir" && "$command_path" == "$global_bin_dir"/* ]]; then
+    printf 'pipx-global'
+    return 0
+  fi
+
+  if [[ -n "$global_home" && "$resolved_path" == "$global_home"/venvs/* ]]; then
     printf 'pipx-global'
     return 0
   fi
@@ -595,11 +644,7 @@ run_pipx_global_action() {
   local action="$1"
   local package="$2"
 
-  as_root env \
-    PIPX_HOME="$PIPX_GLOBAL_HOME" \
-    PIPX_BIN_DIR="$PIPX_GLOBAL_BIN_DIR" \
-    PIPX_MAN_DIR="$PIPX_GLOBAL_MAN_DIR" \
-    pipx "$action" "$package"
+  as_root pipx "$action" --global "$package"
 }
 
 indexed_list_menu() {
