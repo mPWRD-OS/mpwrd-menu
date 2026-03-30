@@ -20,8 +20,8 @@ APP_ACTION_LABELS=("Install" "Upgrade" "Uninstall" "Back")
 APP_ACTION_KEYS=("install" "upgrade" "uninstall" "back")
 SERVICE_LABELS=()
 SERVICE_UNITS=()
-SERVICE_ACTION_LABELS=("Status" "Start" "Stop" "Restart" "Enable" "Disable" "Back")
-SERVICE_ACTION_KEYS=("status" "start" "stop" "restart" "enable" "disable" "back")
+SERVICE_ACTION_LABELS=("Status" "Logs (tail Ctrl+C to end)" "Start" "Stop" "Restart" "Enable" "Disable" "Back")
+SERVICE_ACTION_KEYS=("status" "logs" "start" "stop" "restart" "enable" "disable" "back")
 
 cleanup() {
   printf '\033[0m\033[?25h'
@@ -377,13 +377,38 @@ load_delimited_records() {
   done < "$source_file"
 }
 
+resolve_registry_path() {
+  local configured_path="$1"
+  local file_name="${configured_path##*/}"
+  local candidate
+
+  for candidate in \
+    "$configured_path" \
+    "$SCRIPT_DIR/$file_name"
+  do
+    if [[ -f "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  printf '%s' "$configured_path"
+  return 1
+}
+
 load_app_registry() {
-  load_delimited_records "$APP_REGISTRY" \
+  local registry_file
+
+  registry_file="$(resolve_registry_path "$APP_REGISTRY")"
+  load_delimited_records "$registry_file" \
     APP_LABELS APP_MANAGERS APP_PACKAGES
 }
 
 load_service_registry() {
-  load_delimited_records "$SERVICE_REGISTRY" \
+  local registry_file
+
+  registry_file="$(resolve_registry_path "$SERVICE_REGISTRY")"
+  load_delimited_records "$registry_file" \
     SERVICE_LABELS SERVICE_UNITS
 }
 
@@ -422,13 +447,62 @@ repo_is_ready() {
   return 1
 }
 
+linux_distribution_id() {
+  if [[ -r /etc/os-release ]]; then
+    . /etc/os-release
+    printf '%s' "${ID:-}"
+    return 0
+  fi
+
+  printf 'unknown'
+}
+
 switch_repo_channel() {
   local channel="$1"
+  local distro
   local repo_http="http://download.opensuse.org/repositories/network:/Meshtastic:/${channel}/${MESHTASTIC_DEBIAN_SERIES}/"
   local repo_https="https://download.opensuse.org/repositories/network:/Meshtastic:/${channel}/${MESHTASTIC_DEBIAN_SERIES}/"
   local list_file="/etc/apt/sources.list.d/network:Meshtastic:${channel}.list"
   local key_file="/etc/apt/trusted.gpg.d/network_Meshtastic_${channel}.gpg"
   local temp_list temp_key existing rc=0
+
+  distro="$(linux_distribution_id)"
+
+  if [[ "$distro" == "ubuntu" || "$distro" == "raspbian" ]]; then
+    show_cursor
+    clear_screen
+    printf 'Switching meshtasticd repository to %s (PPA mode)...\n\n' "$channel"
+
+    as_root apt-get update && as_root apt-get install -y software-properties-common || rc=$?
+
+    if (( rc == 0 )) && ! command_exists add-apt-repository; then
+      rc=127
+    fi
+
+    if (( rc == 0 )); then
+      for existing in "${REPO_CHANNELS[@]}"; do
+        as_root add-apt-repository -y --remove "ppa:meshtastic/${existing}" >/dev/null 2>&1 || true
+        as_root rm -f "/etc/apt/sources.list.d/network:Meshtastic:${existing}.list"
+      done
+
+      as_root add-apt-repository -y "ppa:meshtastic/${channel}" || rc=$?
+      (( rc == 0 )) && as_root apt-get update || rc=$?
+      if (( rc == 0 )); then
+        printf '# marker for mPWRD-menu (PPA: meshtastic/%s)\n' "$channel" | \
+          as_root tee "$list_file" >/dev/null
+      fi
+    fi
+
+    printf '\n'
+    if (( rc == 0 )); then
+      printf 'meshtasticd repository is now set to %s.\n' "$channel"
+    else
+      printf 'Repository switch failed with status %d.\n' "$rc"
+    fi
+    pause_prompt
+    hide_cursor
+    return "$rc"
+  fi
 
   if ! command_exists gpg; then
     message_box 'gpg is required to install the Meshtastic repository key.'
@@ -536,6 +610,9 @@ run_service_action() {
   case "$action" in
     status)
       run_and_pause "systemctl status ${unit}" systemctl status --no-pager --full "$unit"
+      ;;
+    logs)
+      run_and_pause "journalctl -u ${unit} -f" as_root journalctl -u "$unit" -n 100 -f --no-pager
       ;;
     start|stop|restart|enable|disable)
       manage_service "$unit" "$action"
@@ -757,9 +834,16 @@ service_menu() {
 }
 
 related_services_menu() {
+  local empty_options=("Open Repository Menu" "Back")
+
   load_service_registry
   if (( ${#SERVICE_LABELS[@]} == 0 )); then
-    message_box "No services are configured. Add entries to $SERVICE_REGISTRY."
+    menu_choose 'Meshtastic Related Services' \
+      "No services are configured. Add entries to $SERVICE_REGISTRY." \
+      empty_options || return 0
+    if (( MENU_RESULT == 0 )); then
+      repo_menu
+    fi
     return 0
   fi
 
@@ -861,6 +945,108 @@ board_config_file_menu() {
   done
 }
 
+edit_current_config() {
+  local config_files=()
+  local editor
+  local edit_options=()
+  local fallback_source="/etc/meshtasticd/config.yaml"
+  local fallback_target="$ACTIVE_CONFIG_DIR/config.yaml"
+  local relative_path=""
+
+  list_relative_files "$ACTIVE_CONFIG_DIR" config_files
+  if (( ${#config_files[@]} == 0 )); then
+    if [[ -f "$fallback_source" ]]; then
+      run_and_pause \
+        "No active configs found. Copying ${fallback_source} to ${fallback_target}..." \
+        install_board_config_file "$fallback_source" "$fallback_target" || return 1
+      config_files=("config.yaml")
+    else
+      message_box "No active configs found in $ACTIVE_CONFIG_DIR."
+      return 0
+    fi
+  fi
+
+  editor="${EDITOR:-nano}"
+  if ! command_exists "$editor"; then
+    message_box "Editor not found: $editor"
+    return 1
+  fi
+
+  if (( ${#config_files[@]} == 1 )); then
+    relative_path="${config_files[0]}"
+  else
+    edit_options=("${config_files[@]}" "Back")
+    while true; do
+      menu_choose 'Edit Current Config' "$ACTIVE_CONFIG_DIR" edit_options || return 0
+      if (( MENU_RESULT == ${#config_files[@]} )); then
+        return 0
+      fi
+
+      relative_path="${config_files[$MENU_RESULT]}"
+      break
+    done
+  fi
+
+  run_and_pause "Editing current config with $editor..." "$editor" "$ACTIVE_CONFIG_DIR/$relative_path"
+}
+
+i2c_overlay_config_file() {
+  if [[ -f /boot/firmware/config.txt ]]; then
+    printf '/boot/firmware/config.txt'
+    return 0
+  fi
+
+  if [[ -f /boot/config.txt ]]; then
+    printf '/boot/config.txt'
+    return 0
+  fi
+
+  return 1
+}
+
+is_raspberry_pi_system() {
+  local board_value=""
+  local model=""
+
+  if [[ -r /etc/armbian-release ]]; then
+    board_value="$(. /etc/armbian-release 2>/dev/null && printf '%s' "$BOARD")" || true
+    if [[ "$board_value" == rpi* ]]; then
+      return 0
+    fi
+  fi
+
+  if [[ -r /proc/device-tree/model ]]; then
+    model="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
+    if [[ "$model" == *'Raspberry Pi'* ]]; then
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+supports_i2c_overlay() {
+  is_raspberry_pi_system && i2c_overlay_config_file >/dev/null
+}
+
+enable_i2c_overlay() {
+  local config_file=""
+
+  if ! supports_i2c_overlay; then
+    message_box 'I2C overlay toggle is only available on Raspberry Pi systems.'
+    return 1
+  fi
+
+  config_file="$(i2c_overlay_config_file)"
+  if ! grep -q '^dtparam=i2c_arm=on' "$config_file" 2>/dev/null; then
+    run_and_pause \
+      'Enabling I2C overlay for Raspberry Pi...' \
+      as_root sh -c "echo 'dtparam=i2c_arm=on' >> '$config_file'"
+  else
+    message_box 'I2C overlay is already enabled.'
+  fi
+}
+
 find_compatible_configs() {
   local directory="$1"
   local query="$2"
@@ -945,7 +1131,19 @@ apply_suggested_board_config_menu() {
 }
 
 board_config_menu() {
-  local options=("Apply suggested config" "Browse all configs" "Remove active config" "Back")
+  local options=(
+    "Apply suggested config"
+    "Browse all configs"
+    "Remove active config"
+    "Edit Current Config"
+  )
+  local has_i2c_overlay=0
+
+  if supports_i2c_overlay; then
+    options+=("Enable I2C Overlay rPi")
+    has_i2c_overlay=1
+  fi
+  options+=("Back")
 
   while true; do
     menu_choose 'Board Config' 'Copy configs from available.d into config.d or remove active configs.' options || return 0
@@ -962,7 +1160,19 @@ board_config_menu() {
           "No active configs found in $ACTIVE_CONFIG_DIR" remove_board_config
         ;;
       3)
-        return 0
+        edit_current_config
+        ;;
+      4)
+        if (( has_i2c_overlay )); then
+          enable_i2c_overlay
+        else
+          return 0
+        fi
+        ;;
+      5)
+        if (( has_i2c_overlay )); then
+          return 0
+        fi
         ;;
     esac
   done
@@ -970,7 +1180,7 @@ board_config_menu() {
 
 main_menu() {
   local options=(
-    "Contact"
+    "Contact - A Console UI for Meshtastic"
     "Configure"
     "Meshtastic Related Services"
     "meshtasticd Repository"

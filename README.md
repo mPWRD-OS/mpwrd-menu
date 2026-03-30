@@ -6,7 +6,7 @@ Lightweight TUI for mPWRD-OS.
 
 `mpwrd-menu` is a lightweight Bash menu for minimal console images. It provides:
 
-- `Contact`
+- `Contact - A Console UI for Meshtastic`
 - `Meshtastic Related Services`
 - `meshtasticd Repository`
 - `Mesh Apps Manager`
@@ -72,7 +72,7 @@ sudo apt install mpwrd-menu
 - The TUI itself uses Bash only.
 - Some actions rely on system tools already expected on the target OS, such as `systemctl`, `apt-get`, `nmtui`, `pipx`, `curl` or `wget`, `gpg`, and `sudo`.
 - `Network Quick Start` runs `nmtui` and returns directly to the menu when finished.
-- `Contact` in the main menu runs the `contact` command directly.
+- `Contact - A Console UI for Meshtastic` in the main menu runs the `contact` command directly.
 - `Mesh Apps Manager` reads `mesh-apps.conf`.
 - App manager types supported in `mesh-apps.conf` are `apt`, `pipx`, and `pipx-global`.
 - `Meshtastic Related Services` reads `mesh-services.conf`.
