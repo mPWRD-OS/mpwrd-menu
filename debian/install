@@ -1,3 +1,5 @@
 mpwrd-menu usr/bin
 mesh-apps.conf usr/share/mpwrd-menu
 mesh-services.conf usr/share/mpwrd-menu
+wifisync usr/lib/mpwrd-menu
+wifisync.service lib/systemd/system

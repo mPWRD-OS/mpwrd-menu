@@ -1,0 +1,14 @@
+[Unit]
+Description=Sync Meshtastic Wi-Fi config with local rfkill state
+After=meshtasticd.service
+Wants=meshtasticd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/mpwrd-menu/wifisync
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

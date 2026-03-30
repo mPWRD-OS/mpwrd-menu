@@ -820,6 +820,7 @@ board_config_menu() {
 main_menu() {
   local options=(
     "Contact"
+    "Configure"
     "Meshtastic Related Services"
     "meshtasticd Repository"
     "Mesh Apps Manager"
@@ -835,21 +836,24 @@ main_menu() {
         run_terminal_program pause contact
         ;;
       1)
-        related_services_menu
+        run_terminal_program pause contact -c
         ;;
       2)
-        repo_menu
+        related_services_menu
         ;;
       3)
-        mesh_apps_menu
+        repo_menu
         ;;
       4)
-        run_terminal_program root-no-pause nmtui
+        mesh_apps_menu
         ;;
       5)
-        board_config_menu
+        run_terminal_program root-no-pause nmtui
         ;;
       6)
+        board_config_menu
+        ;;
+      7)
         return 0
         ;;
     esac
