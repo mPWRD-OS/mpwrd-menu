@@ -7,6 +7,7 @@ readonly APP_REGISTRY="${APP_REGISTRY:-/usr/share/mpwrd-menu/mesh-apps.conf}"
 readonly SERVICE_REGISTRY="${SERVICE_REGISTRY:-/usr/share/mpwrd-menu/mesh-services.conf}"
 readonly MESHTASTIC_PACKAGE="meshtasticd"
 readonly MESHTASTIC_DEBIAN_SERIES="Debian_13"
+readonly MPWRD_MENU_PACKAGE="mpwrd-menu"
 readonly MPWRD_RELEASE_FILE="/etc/mPWRD-release"
 readonly REPO_CHANNELS=("beta" "alpha" "daily")
 readonly AVAILABLE_CONFIG_DIR="/etc/meshtasticd/available.d"
@@ -110,6 +111,39 @@ mpwrd_os_version() {
   printf '%s' "$version"
 }
 
+mpwrd_menu_version() {
+  local version=""
+
+  if ! command_exists dpkg-query; then
+    return 1
+  fi
+
+  version="$(dpkg-query -W -f='${Version}' "$MPWRD_MENU_PACKAGE" 2>/dev/null || true)"
+  version="$(trim "$version")"
+  if [[ -z "$version" ]]; then
+    return 1
+  fi
+
+  printf '%s' "$version"
+}
+
+print_version_info() {
+  local menu_version=""
+  local os_version=""
+
+  if menu_version="$(mpwrd_menu_version)"; then
+    printf 'mPWRD-menu v%s\n' "$menu_version"
+  else
+    printf 'mPWRD-menu version unavailable\n'
+  fi
+
+  if os_version="$(mpwrd_os_version)"; then
+    printf 'mPWRD-OS v%s\n' "$os_version"
+  else
+    printf 'mPWRD-OS version unavailable\n'
+  fi
+}
+
 read_key() {
   local key extra
   IFS= read -rsn1 key || {
@@ -150,6 +184,8 @@ render_menu() {
   local count=0
   local end=0
   local i=0
+  local menu_title="mPWRD-menu"
+  local menu_version=""
   local page_size=0
   local release_version=""
   local start=0
@@ -175,7 +211,10 @@ render_menu() {
   fi
 
   clear_screen
-  printf 'mPWRD-menu\n'
+  if menu_version="$(mpwrd_menu_version)"; then
+    menu_title+=" v${menu_version}"
+  fi
+  printf '%s\n' "$menu_title"
   if [[ "$title" == "Main Menu" ]] && release_version="$(mpwrd_os_version)"; then
     printf 'mPWRD-OS v%s\n' "$release_version"
   fi
@@ -1032,6 +1071,19 @@ main_menu() {
   done
 }
 
-hide_cursor
-main_menu
-clear_screen
+case "${1:-}" in
+  --version)
+    trap - EXIT INT TERM
+    print_version_info
+    ;;
+  "")
+    hide_cursor
+    main_menu
+    clear_screen
+    ;;
+  *)
+    trap - EXIT INT TERM
+    printf 'Usage: %s [--version]\n' "${0##*/}" >&2
+    exit 1
+    ;;
+esac
