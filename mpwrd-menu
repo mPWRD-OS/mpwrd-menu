@@ -4,12 +4,14 @@ set -u
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly APP_REGISTRY="${APP_REGISTRY:-/usr/share/mpwrd-menu/mesh-apps.conf}"
+readonly DISPLAY_REGISTRY="${DISPLAY_REGISTRY:-/usr/share/mpwrd-menu/display-profiles.conf}"
 readonly SERVICE_REGISTRY="${SERVICE_REGISTRY:-/usr/share/mpwrd-menu/mesh-services.conf}"
 readonly MESHTASTIC_PACKAGE="meshtasticd"
 readonly MESHTASTIC_DEBIAN_SERIES="Debian_13"
 readonly REPO_CHANNELS=("beta" "alpha" "daily")
 readonly AVAILABLE_CONFIG_DIR="/etc/meshtasticd/available.d"
 readonly ACTIVE_CONFIG_DIR="/etc/meshtasticd/config.d"
+readonly ARMBIAN_ENV_FILE="${ARMBIAN_ENV_FILE:-/boot/armbianEnv.txt}"
 
 MENU_RESULT=-1
 READ_KEY=""
@@ -18,6 +20,14 @@ APP_MANAGERS=()
 APP_PACKAGES=()
 APP_ACTION_LABELS=("Install" "Upgrade" "Uninstall" "Back")
 APP_ACTION_KEYS=("install" "upgrade" "uninstall" "back")
+DISPLAY_LABELS=()
+DISPLAY_BOARDS=()
+DISPLAY_OVERLAYS=()
+DISPLAY_PROBE_KINDS=()
+DISPLAY_PROBE_BUSES=()
+DISPLAY_PROBE_ADDRS=()
+DISPLAY_PROBE_REGS=()
+DISPLAY_PROBE_VALUES=()
 SERVICE_LABELS=()
 SERVICE_UNITS=()
 SERVICE_ACTION_LABELS=("Status" "Logs (tail Ctrl+C to end)" "Start" "Stop" "Restart" "Enable" "Disable" "Back")
@@ -402,6 +412,15 @@ load_app_registry() {
   registry_file="$(resolve_registry_path "$APP_REGISTRY")"
   load_delimited_records "$registry_file" \
     APP_LABELS APP_MANAGERS APP_PACKAGES
+}
+
+load_display_registry() {
+  local registry_file
+
+  registry_file="$(resolve_registry_path "$DISPLAY_REGISTRY")"
+  load_delimited_records "$registry_file" \
+    DISPLAY_LABELS DISPLAY_BOARDS DISPLAY_OVERLAYS DISPLAY_PROBE_KINDS \
+    DISPLAY_PROBE_BUSES DISPLAY_PROBE_ADDRS DISPLAY_PROBE_REGS DISPLAY_PROBE_VALUES
 }
 
 load_service_registry() {
@@ -945,6 +964,504 @@ board_config_file_menu() {
   done
 }
 
+current_board_id() {
+  local board_value=""
+
+  if [[ -r /etc/armbian-release ]]; then
+    board_value="$(. /etc/armbian-release 2>/dev/null && printf '%s' "$BOARD")" || true
+  fi
+
+  printf '%s' "$board_value"
+}
+
+csv_contains() {
+  local needle="$1"
+  local csv="$2"
+  local entry=""
+  local entries=()
+
+  IFS=',' read -r -a entries <<< "$csv"
+  for entry in "${entries[@]}"; do
+    entry="$(trim "$entry")"
+    [[ -n "$entry" && "$entry" == "$needle" ]] && return 0
+  done
+
+  return 1
+}
+
+collect_display_profile_indices_for_board() {
+  local board_id="$1"
+  local result_name="$2"
+  local -n result_ref="$result_name"
+  local i
+
+  load_display_registry
+  result_ref=()
+
+  [[ -n "$board_id" ]] || return 0
+
+  for i in "${!DISPLAY_LABELS[@]}"; do
+    if csv_contains "$board_id" "${DISPLAY_BOARDS[$i]}"; then
+      result_ref+=("$i")
+    fi
+  done
+}
+
+supports_display_profiles() {
+  local board_id=""
+  local indices=()
+
+  board_id="$(current_board_id)"
+  collect_display_profile_indices_for_board "$board_id" indices
+  (( ${#indices[@]} > 0 ))
+}
+
+i2c_reg_read() {
+  local bus="$1"
+  local addr="$2"
+  local reg="$3"
+
+  as_root python3 - "$bus" "$addr" "$reg" <<'PY'
+import fcntl
+import os
+import sys
+import time
+
+I2C_SLAVE_FORCE = 0x0706
+
+bus = int(sys.argv[1], 0)
+addr = int(sys.argv[2], 0)
+reg = int(sys.argv[3], 0)
+path = f"/dev/i2c-{bus}"
+fd = None
+
+try:
+    fd = os.open(path, os.O_RDWR)
+    fcntl.ioctl(fd, I2C_SLAVE_FORCE, addr)
+    os.write(fd, bytes([reg]))
+    time.sleep(0.01)
+    data = os.read(fd, 1)
+    if len(data) != 1:
+        raise OSError("short read")
+    print(f"0x{data[0]:02x}")
+except Exception:
+    sys.exit(1)
+finally:
+    if fd is not None:
+        os.close(fd)
+PY
+}
+
+display_profile_matches_probe() {
+  local index="$1"
+  local kind="${DISPLAY_PROBE_KINDS[$index]}"
+  local probe_value=""
+
+  case "$kind" in
+    i2c-reg-match)
+      probe_value="$(i2c_reg_read "${DISPLAY_PROBE_BUSES[$index]}" \
+        "${DISPLAY_PROBE_ADDRS[$index]}" "${DISPLAY_PROBE_REGS[$index]}")" || return 1
+      csv_contains "$probe_value" "${DISPLAY_PROBE_VALUES[$index]}"
+      ;;
+    i2c-reg-low-nibble-match)
+      probe_value="$(i2c_reg_read "${DISPLAY_PROBE_BUSES[$index]}" \
+        "${DISPLAY_PROBE_ADDRS[$index]}" "${DISPLAY_PROBE_REGS[$index]}")" || return 1
+      probe_value="$(printf '0x%02x' "$(( ${probe_value} & 0x0f ))")"
+      csv_contains "$probe_value" "${DISPLAY_PROBE_VALUES[$index]}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+confirm_action() {
+  local title="$1"
+  local prompt="$2"
+  local options=("Apply" "Cancel")
+
+  menu_choose "$title" "$prompt" options || return 1
+  (( MENU_RESULT == 0 ))
+}
+
+ensure_display_probe_access() {
+  if (( EUID == 0 )); then
+    return 0
+  fi
+
+  if ! command_exists sudo; then
+    message_box 'sudo is required for display detection.'
+    return 1
+  fi
+
+  run_and_pause 'Checking sudo access for display detection...' sudo -v
+}
+
+detect_display_profile_index() {
+  local result_name="$1"
+  local -n result_ref="$result_name"
+  local board_id=""
+  local candidate_indices=()
+  local matched_indices=()
+  local matched_labels=()
+  local i
+
+  result_ref=""
+  board_id="$(current_board_id)"
+  collect_display_profile_indices_for_board "$board_id" candidate_indices
+
+  for i in "${candidate_indices[@]}"; do
+    if display_profile_matches_probe "$i"; then
+      matched_indices+=("$i")
+      matched_labels+=("${DISPLAY_LABELS[$i]}")
+    fi
+  done
+
+  if (( ${#matched_indices[@]} == 0 )); then
+    return 1
+  fi
+
+  if (( ${#matched_indices[@]} == 1 )); then
+    result_ref="${matched_indices[0]}"
+    return 0
+  fi
+
+  matched_labels+=("Back")
+  menu_choose 'Detected Displays' "Board: ${board_id}" matched_labels || return 1
+  if (( MENU_RESULT == ${#matched_indices[@]} )); then
+    return 1
+  fi
+
+  result_ref="${matched_indices[$MENU_RESULT]}"
+  return 0
+}
+
+choose_display_profile_index_for_board() {
+  local result_name="$1"
+  local -n result_ref="$result_name"
+  local board_id=""
+  local indices=()
+  local labels=()
+  local i
+
+  result_ref=""
+  board_id="$(current_board_id)"
+  collect_display_profile_indices_for_board "$board_id" indices
+
+  if (( ${#indices[@]} == 0 )); then
+    return 1
+  fi
+
+  for i in "${indices[@]}"; do
+    labels+=("${DISPLAY_LABELS[$i]}")
+  done
+  labels+=("Back")
+
+  menu_choose 'Choose Display' "Board: ${board_id}" labels || return 1
+  if (( MENU_RESULT == ${#indices[@]} )); then
+    return 1
+  fi
+
+  result_ref="${indices[$MENU_RESULT]}"
+  return 0
+}
+
+read_armbian_env_value() {
+  local key="$1"
+
+  [[ -r "$ARMBIAN_ENV_FILE" ]] || return 0
+
+  python3 - "$ARMBIAN_ENV_FILE" "$key" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = ""
+
+for line in path.read_text().splitlines():
+    if "=" not in line:
+        continue
+    current_key, current_value = line.split("=", 1)
+    if current_key == key:
+        value = current_value.strip()
+
+print(value, end="")
+PY
+}
+
+write_armbian_env_value() {
+  local key="$1"
+  local value="$2"
+
+  if [[ ! -e "$ARMBIAN_ENV_FILE" ]]; then
+    printf 'Boot config not found: %s\n' "$ARMBIAN_ENV_FILE" >&2
+    return 1
+  fi
+
+  as_root python3 - "$ARMBIAN_ENV_FILE" "$key" "$value" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+lines = path.read_text().splitlines()
+new_lines = []
+updated = False
+
+for line in lines:
+    if "=" not in line:
+        new_lines.append(line)
+        continue
+    current_key, _ = line.split("=", 1)
+    if current_key == key:
+        if not updated and value:
+            new_lines.append(f"{key}={value}")
+        updated = True
+    else:
+        new_lines.append(line)
+
+if not updated and value:
+    new_lines.append(f"{key}={value}")
+
+path.write_text("\n".join(new_lines) + "\n")
+PY
+}
+
+collect_known_display_overlays() {
+  local result_name="$1"
+  local -n result_ref="$result_name"
+  local overlay=""
+  local seen=()
+  local already_seen=0
+
+  load_display_registry
+  result_ref=()
+
+  for overlay in "${DISPLAY_OVERLAYS[@]}"; do
+    already_seen=0
+    for entry in "${seen[@]}"; do
+      if [[ "$entry" == "$overlay" ]]; then
+        already_seen=1
+        break
+      fi
+    done
+    if (( ! already_seen )); then
+      seen+=("$overlay")
+      result_ref+=("$overlay")
+    fi
+  done
+}
+
+current_display_overlay() {
+  local raw_value=""
+  local tokens=()
+  local known_overlays=()
+  local token=""
+
+  raw_value="$(read_armbian_env_value user_overlays)"
+  read -r -a tokens <<< "$raw_value"
+  collect_known_display_overlays known_overlays
+
+  for token in "${tokens[@]}"; do
+    if csv_contains "$token" "$(IFS=,; printf '%s' "${known_overlays[*]}")"; then
+      printf '%s' "$token"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+current_display_label() {
+  local board_id=""
+  local overlay=""
+  local indices=()
+  local i
+
+  board_id="$(current_board_id)"
+  overlay="$(current_display_overlay 2>/dev/null || true)"
+  collect_display_profile_indices_for_board "$board_id" indices
+
+  for i in "${indices[@]}"; do
+    if [[ "${DISPLAY_OVERLAYS[$i]}" == "$overlay" ]]; then
+      printf '%s' "${DISPLAY_LABELS[$i]}"
+      return 0
+    fi
+  done
+
+  printf 'none'
+  return 1
+}
+
+apply_display_overlay() {
+  local overlay_name="$1"
+  local raw_value=""
+  local current_tokens=()
+  local known_overlays=()
+  local updated_tokens=()
+  local token=""
+  local known_csv=""
+  local deduped=()
+  local already_seen=0
+  local entry=""
+
+  raw_value="$(read_armbian_env_value user_overlays)"
+  read -r -a current_tokens <<< "$raw_value"
+  collect_known_display_overlays known_overlays
+  known_csv="$(IFS=,; printf '%s' "${known_overlays[*]}")"
+
+  for token in "${current_tokens[@]}"; do
+    if [[ -n "$token" ]] && ! csv_contains "$token" "$known_csv"; then
+      updated_tokens+=("$token")
+    fi
+  done
+
+  if [[ -n "$overlay_name" ]]; then
+    updated_tokens+=("$overlay_name")
+  fi
+
+  for token in "${updated_tokens[@]}"; do
+    already_seen=0
+    for entry in "${deduped[@]}"; do
+      if [[ "$entry" == "$token" ]]; then
+        already_seen=1
+        break
+      fi
+    done
+    if (( ! already_seen )); then
+      deduped+=("$token")
+    fi
+  done
+
+  write_armbian_env_value user_overlays "${deduped[*]}"
+}
+
+display_reboot_required_message() {
+  local message="$1"
+
+  message_box "${message}
+
+Reboot required for the display change to take effect."
+}
+
+detect_and_enable_display() {
+  local index=""
+  local label=""
+  local overlay=""
+
+  ensure_display_probe_access || return 1
+
+  if ! detect_display_profile_index index; then
+    message_box "No supported display detected for board: $(current_board_id)"
+    return 0
+  fi
+
+  label="${DISPLAY_LABELS[$index]}"
+  overlay="${DISPLAY_OVERLAYS[$index]}"
+
+  if ! confirm_action 'Enable Display' \
+    "Detected display: ${label}
+Overlay: ${overlay}
+
+This updates ${ARMBIAN_ENV_FILE}."; then
+    return 0
+  fi
+
+  run_and_pause "Enabling display: ${label}" apply_display_overlay "$overlay" || return 1
+  display_reboot_required_message "Enabled display: ${label}"
+}
+
+choose_and_enable_display_manually() {
+  local index=""
+  local label=""
+  local overlay=""
+
+  if ! choose_display_profile_index_for_board index; then
+    return 0
+  fi
+
+  label="${DISPLAY_LABELS[$index]}"
+  overlay="${DISPLAY_OVERLAYS[$index]}"
+
+  if ! confirm_action 'Enable Display' \
+    "Selected display: ${label}
+Overlay: ${overlay}
+
+This updates ${ARMBIAN_ENV_FILE}."; then
+    return 0
+  fi
+
+  run_and_pause "Enabling display: ${label}" apply_display_overlay "$overlay" || return 1
+  display_reboot_required_message "Enabled display: ${label}"
+}
+
+disable_display_overlay() {
+  local active_label=""
+  local active_overlay=""
+
+  active_label="$(current_display_label)"
+  active_overlay="$(current_display_overlay 2>/dev/null || true)"
+
+  if [[ -z "$active_overlay" ]]; then
+    message_box 'No managed display overlay is currently enabled.'
+    return 0
+  fi
+
+  if ! confirm_action 'Disable Display' \
+    "Active display: ${active_label}
+Overlay: ${active_overlay}
+
+This removes the managed display overlay from ${ARMBIAN_ENV_FILE}."; then
+    return 0
+  fi
+
+  run_and_pause "Disabling display overlay: ${active_label}" apply_display_overlay "" || return 1
+  display_reboot_required_message "Disabled display overlay: ${active_label}"
+}
+
+display_menu() {
+  local board_id=""
+  local prompt=""
+  local options=(
+    "Detect and enable display"
+    "Choose display manually"
+    "Disable active display overlay"
+    "Back"
+  )
+
+  board_id="$(current_board_id)"
+  if [[ -z "$board_id" ]]; then
+    message_box 'Could not detect the current board.'
+    return 0
+  fi
+
+  if ! supports_display_profiles; then
+    message_box "No display profiles are configured for board: ${board_id}"
+    return 0
+  fi
+
+  while true; do
+    prompt="Board: ${board_id} | Active display: $(current_display_label)"
+    menu_choose 'Display' "$prompt" options || return 0
+    case "$MENU_RESULT" in
+      0)
+        detect_and_enable_display
+        ;;
+      1)
+        choose_and_enable_display_manually
+        ;;
+      2)
+        disable_display_overlay
+        ;;
+      3)
+        return 0
+        ;;
+    esac
+  done
+}
+
 edit_current_config() {
   local config_files=()
   local editor
@@ -1138,11 +1655,16 @@ board_config_menu() {
     "Edit Current Config"
   )
   local has_i2c_overlay=0
+  local i2c_option=-1
+  local back_option=-1
 
   if supports_i2c_overlay; then
+    i2c_option="${#options[@]}"
     options+=("Enable I2C Overlay rPi")
     has_i2c_overlay=1
   fi
+
+  back_option="${#options[@]}"
   options+=("Back")
 
   while true; do
@@ -1162,15 +1684,10 @@ board_config_menu() {
       3)
         edit_current_config
         ;;
-      4)
-        if (( has_i2c_overlay )); then
+      *)
+        if (( has_i2c_overlay && MENU_RESULT == i2c_option )); then
           enable_i2c_overlay
-        else
-          return 0
-        fi
-        ;;
-      5)
-        if (( has_i2c_overlay )); then
+        elif (( MENU_RESULT == back_option )); then
           return 0
         fi
         ;;
@@ -1187,8 +1704,17 @@ main_menu() {
     "Mesh Apps Manager"
     "Network Quick Start"
     "Board Config"
-    "Exit"
   )
+  local display_option=-1
+  local exit_option=-1
+
+  if supports_display_profiles; then
+    display_option="${#options[@]}"
+    options+=("Display")
+  fi
+
+  exit_option="${#options[@]}"
+  options+=("Exit")
 
   while true; do
     menu_choose 'Main Menu' 'Lightweight TUI for mPWRD-OS.' options || return 0
@@ -1214,8 +1740,12 @@ main_menu() {
       6)
         board_config_menu
         ;;
-      7)
-        return 0
+      *)
+        if (( display_option >= 0 && MENU_RESULT == display_option )); then
+          display_menu
+        elif (( MENU_RESULT == exit_option )); then
+          return 0
+        fi
         ;;
     esac
   done

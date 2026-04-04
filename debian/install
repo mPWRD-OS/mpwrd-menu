@@ -1,4 +1,5 @@
 mpwrd-menu usr/bin
+display-profiles.conf usr/share/mpwrd-menu
 mesh-apps.conf usr/share/mpwrd-menu
 mesh-services.conf usr/share/mpwrd-menu
 wifisync usr/lib/mpwrd-menu
