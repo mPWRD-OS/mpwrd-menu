@@ -1624,6 +1624,83 @@ enable_i2c_overlay() {
   fi
 }
 
+board_config_name_if_compatible() {
+  local file="$1"
+  local query="$2"
+
+  awk -v query="$query" '
+    BEGIN {
+      in_meta = 0
+      in_compatible = 0
+      matched = 0
+      name = ""
+    }
+
+    /^[[:space:]]*#/ { next }
+
+    /^[^[:space:]#][^:]*:[[:space:]]*$/ {
+      if ($0 == "Meta:") {
+        in_meta = 1
+        in_compatible = 0
+        next
+      }
+      if (in_meta) {
+        in_meta = 0
+        in_compatible = 0
+      }
+    }
+
+    !in_meta { next }
+
+    /^  name:[[:space:]]*/ {
+      name = $0
+      sub(/^  name:[[:space:]]*/, "", name)
+      gsub(/[[:space:]]+$/, "", name)
+      next
+    }
+
+    /^  compatible:[[:space:]]*$/ {
+      in_compatible = 1
+      next
+    }
+
+    in_compatible && /^    -[[:space:]]*/ {
+      value = $0
+      sub(/^    -[[:space:]]*/, "", value)
+      sub(/[[:space:]]*#.*/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      if (value == query) {
+        matched = 1
+      }
+      next
+    }
+
+    in_compatible {
+      in_compatible = 0
+    }
+
+    END {
+      if (matched) {
+        printf("%s\n", name)
+      }
+    }
+  ' "$file"
+}
+
+board_config_query_alias() {
+  case "$1" in
+    rpi4b)
+      printf 'raspberry-pi'
+      ;;
+    luckfox-lyra-zero-deck)
+      printf 'luckfox-lyra-zero-w'
+      ;;
+    *)
+      printf '%s' "$1"
+      ;;
+  esac
+}
+
 find_compatible_configs() {
   local directory="$1"
   local query="$2"
@@ -1639,17 +1716,17 @@ find_compatible_configs() {
   [[ -d "$directory" && -n "$query" ]] || return 0
 
   while IFS= read -r file; do
-    if yq -e --arg q "$query" '.Meta.compatible[] | select(. == $q)' "$file" >/dev/null 2>&1; then
-      relative_path="${file#"$directory/"}"
-      name="$(yq -r '.Meta.name // ""' "$file" 2>/dev/null)"
-      result_files_ref+=("$relative_path")
-      if [[ -n "$name" ]]; then
-        result_labels_ref+=("$name [$relative_path]")
-      else
-        result_labels_ref+=("$relative_path")
-      fi
+    name="$(board_config_name_if_compatible "$file" "$query")"
+    [[ -n "$name" ]] || continue
+
+    relative_path="${file#"$directory/"}"
+    result_files_ref+=("$relative_path")
+    if [[ -n "$name" ]]; then
+      result_labels_ref+=("$name [$relative_path]")
+    else
+      result_labels_ref+=("$relative_path")
     fi
-  done < <(find "$directory" -mindepth 1 -type f 2>/dev/null | sort)
+  done < <(find "$directory" -mindepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | sort)
 }
 
 default_board_config_query() {
@@ -1660,11 +1737,8 @@ default_board_config_query() {
     "")
       printf ''
       ;;
-    rpi4b)
-      printf 'raspberry-pi'
-      ;;
     *)
-      printf '%s' "$board_value"
+      board_config_query_alias "$board_value"
       ;;
   esac
 }
@@ -1676,11 +1750,6 @@ apply_suggested_board_config_menu() {
   local options=()
 
   query="$(default_board_config_query)"
-
-  if ! command_exists yq; then
-    message_box 'yq is required for suggested board config matching. Use Browse all configs instead.'
-    return 1
-  fi
 
   if [[ -z "$query" ]]; then
     message_box 'Could not detect the current board. Use Browse all configs instead.'
