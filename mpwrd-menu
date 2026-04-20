@@ -1766,7 +1766,7 @@ apply_suggested_board_config_menu() {
   options=("${config_labels[@]}" "Back")
 
   while true; do
-    menu_choose 'Apply Suggested Config' "Detected board: $query" options || return 0
+    menu_choose 'Select Radio Configuration' "Detected board: $query" options || return 0
     if (( MENU_RESULT == ${#config_files[@]} )); then
       return 0
     fi
@@ -1778,7 +1778,7 @@ apply_suggested_board_config_menu() {
 
 board_config_menu() {
   local options=(
-    "Apply suggested config"
+    "Select radio configuration"
     "Browse all configs"
     "Remove active config"
     "Edit Current Config"
