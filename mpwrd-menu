@@ -14,6 +14,8 @@ readonly REPO_CHANNELS=("beta" "alpha" "daily")
 readonly AVAILABLE_CONFIG_DIR="/etc/meshtasticd/available.d"
 readonly ACTIVE_CONFIG_DIR="/etc/meshtasticd/config.d"
 readonly ARMBIAN_ENV_FILE="${ARMBIAN_ENV_FILE:-/boot/armbianEnv.txt}"
+readonly IDLE_DISPLAY_CONFIG_FILE="${IDLE_DISPLAY_CONFIG_FILE:-/etc/default/lyra-idle-display}"
+readonly IDLE_DISPLAY_SERVICE="lyra-idle-display.service"
 readonly COLOR_RESET=$'\033[0m'
 readonly COLOR_YELLOW=$'\033[33m'
 
@@ -1514,15 +1516,242 @@ This removes the managed display overlay from ${ARMBIAN_ENV_FILE}."; then
   display_reboot_required_message "Disabled display overlay: ${active_label}"
 }
 
+read_key_value_file_value() {
+  local file="$1"
+  local key="$2"
+  local line=""
+  local current_key=""
+  local value=""
+
+  [[ -r "$file" ]] || return 0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == \#* ]] && continue
+    [[ "$line" == *=* ]] || continue
+    current_key="${line%%=*}"
+    if [[ "$current_key" == "$key" ]]; then
+      value="${line#*=}"
+      value="$(trim "$value")"
+      if [[ ${#value} -ge 2 ]] && [[ "${value:0:1}" == "${value: -1}" ]] && [[ "${value:0:1}" =~ [\"\'] ]]; then
+        value="${value:1:${#value}-2}"
+      fi
+      printf '%s' "$value"
+      return 0
+    fi
+  done < "$file"
+}
+
+write_key_value_file_value() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local tmp_file=""
+  local new_file=""
+
+  tmp_file="$(mktemp)"
+  new_file="${tmp_file}.new"
+
+  if [[ -f "$file" ]]; then
+    cat "$file" > "$tmp_file"
+  fi
+
+  awk -v key="$key" -v value="$value" '
+    BEGIN { updated = 0 }
+    /^[[:space:]]*#/ || $0 !~ /=/ {
+      print
+      next
+    }
+    {
+      current_key = $0
+      sub(/=.*/, "", current_key)
+      if (current_key == key) {
+        if (!updated) {
+          print key "=" value
+          updated = 1
+        }
+        next
+      }
+      print
+    }
+    END {
+      if (!updated) {
+        print key "=" value
+      }
+    }
+  ' "$tmp_file" > "$new_file"
+
+  as_root install -m 0644 "$new_file" "$file"
+  rm -f "$tmp_file" "$new_file"
+}
+
+idle_display_backlight_path() {
+  local configured=""
+  local candidate=""
+
+  configured="$(read_key_value_file_value "$IDLE_DISPLAY_CONFIG_FILE" BACKLIGHT_DEVICE)"
+  if [[ -n "$configured" ]] && [[ -d "$configured" ]]; then
+    printf '%s' "$configured"
+    return 0
+  fi
+
+  for candidate in /sys/class/backlight/*; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+idle_display_max_brightness() {
+  local backlight_path=""
+  local max_brightness=""
+
+  backlight_path="$(idle_display_backlight_path)" || return 1
+  [[ -r "$backlight_path/max_brightness" ]] || return 1
+  IFS= read -r max_brightness < "$backlight_path/max_brightness" || return 1
+  [[ "$max_brightness" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$max_brightness"
+}
+
+idle_display_config_value() {
+  local key="$1"
+  local default_value="$2"
+  local value=""
+
+  value="$(read_key_value_file_value "$IDLE_DISPLAY_CONFIG_FILE" "$key")"
+  if [[ "$value" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$value"
+  else
+    printf '%s' "$default_value"
+  fi
+}
+
+idle_display_service_available() {
+  [[ -f "$IDLE_DISPLAY_CONFIG_FILE" ]] && command_exists systemctl
+}
+
+restart_idle_display_service() {
+  as_root systemctl restart "$IDLE_DISPLAY_SERVICE"
+}
+
+apply_idle_display_setting() {
+  local key="$1"
+  local value="$2"
+
+  write_key_value_file_value "$IDLE_DISPLAY_CONFIG_FILE" "$key" "$value" &&
+    restart_idle_display_service
+}
+
+prompt_integer_value() {
+  local result_name="$1"
+  local title="$2"
+  local prompt="$3"
+  local current_value="$4"
+  local minimum="$5"
+  local maximum="$6"
+  local -n result_ref="$result_name"
+  local input=""
+
+  while true; do
+    show_cursor
+    clear_screen
+    printf '%s\n\n' "$title"
+    printf '%s\n' "$prompt"
+    printf 'Current value: %s\n' "$current_value"
+    printf 'Allowed range: %s-%s\n\n' "$minimum" "$maximum"
+    printf 'Enter a new value, or leave blank to cancel: '
+    read -r input || {
+      hide_cursor
+      return 1
+    }
+    input="$(trim "$input")"
+    if [[ -z "$input" ]]; then
+      hide_cursor
+      return 1
+    fi
+    if [[ "$input" =~ ^[0-9]+$ ]] && (( input >= minimum && input <= maximum )); then
+      result_ref="$input"
+      hide_cursor
+      return 0
+    fi
+    printf '\nValue must be an integer between %s and %s.\n' "$minimum" "$maximum"
+    pause_prompt
+  done
+}
+
+idle_display_settings_menu() {
+  local max_brightness=""
+  local active_brightness=""
+  local dim_brightness=""
+  local dim_timeout=""
+  local off_timeout=""
+  local options=()
+  local prompt=""
+  local new_value=""
+
+  if ! idle_display_service_available; then
+    message_box 'Idle display settings are not available on this system.'
+    return 0
+  fi
+
+  max_brightness="$(idle_display_max_brightness)" || {
+    message_box 'Could not detect the backlight brightness range.'
+    return 0
+  }
+
+  while true; do
+    active_brightness="$(idle_display_config_value ACTIVE_BRIGHTNESS "$max_brightness")"
+    dim_brightness="$(idle_display_config_value DIM_BRIGHTNESS 4)"
+    dim_timeout="$(idle_display_config_value IDLE_DIM_TIMEOUT 30)"
+    off_timeout="$(idle_display_config_value IDLE_OFF_TIMEOUT 60)"
+    options=(
+      "Set active brightness [${active_brightness}/${max_brightness}]"
+      "Set dim brightness [${dim_brightness}/${max_brightness}]"
+      "Set dim timeout [${dim_timeout}s]"
+      "Set screen sleep timeout [${off_timeout}s]"
+      "Back"
+    )
+    prompt="Brightness: ${active_brightness}/${max_brightness} active, ${dim_brightness}/${max_brightness} dim | Timers: ${dim_timeout}s dim, ${off_timeout}s off"
+
+    menu_choose 'Brightness/Idle Settings' "$prompt" options || return 0
+    case "$MENU_RESULT" in
+      0)
+        prompt_integer_value new_value 'Set Active Brightness' 'Choose the normal wake brightness.' "$active_brightness" 1 "$max_brightness" || continue
+        run_and_pause "Applying active brightness: ${new_value}/${max_brightness}" apply_idle_display_setting ACTIVE_BRIGHTNESS "$new_value"
+        ;;
+      1)
+        prompt_integer_value new_value 'Set Dim Brightness' 'Choose the dimmed brightness level.' "$dim_brightness" 0 "$max_brightness" || continue
+        run_and_pause "Applying dim brightness: ${new_value}/${max_brightness}" apply_idle_display_setting DIM_BRIGHTNESS "$new_value"
+        ;;
+      2)
+        prompt_integer_value new_value 'Set Dim Timeout' 'Choose how long the display stays active before dimming.' "$dim_timeout" 1 86400 || continue
+        if (( new_value > off_timeout )); then
+          message_box "Dim timeout must be less than or equal to the screen sleep timeout (${off_timeout}s)."
+          continue
+        fi
+        run_and_pause "Applying dim timeout: ${new_value}s" apply_idle_display_setting IDLE_DIM_TIMEOUT "$new_value"
+        ;;
+      3)
+        prompt_integer_value new_value 'Set Screen Sleep Timeout' 'Choose how long the display waits before turning fully off.' "$off_timeout" 1 86400 || continue
+        if (( new_value < dim_timeout )); then
+          message_box "Screen sleep timeout must be greater than or equal to the dim timeout (${dim_timeout}s)."
+          continue
+        fi
+        run_and_pause "Applying screen sleep timeout: ${new_value}s" apply_idle_display_setting IDLE_OFF_TIMEOUT "$new_value"
+        ;;
+      4)
+        return 0
+        ;;
+    esac
+  done
+}
+
 display_menu() {
   local board_id=""
   local prompt=""
-  local options=(
-    "Detect and enable display"
-    "Choose display manually"
-    "Disable active display overlay"
-    "Back"
-  )
+  local options=()
 
   board_id="$(current_board_id)"
   if [[ -z "$board_id" ]]; then
@@ -1536,6 +1765,13 @@ display_menu() {
   fi
 
   while true; do
+    options=(
+      "Detect and enable display"
+      "Choose display manually"
+      "Disable active display overlay"
+      "Brightness/Idle settings"
+      "Back"
+    )
     prompt="Board: ${board_id} | Active display: $(current_display_label)"
     menu_choose 'Display' "$prompt" options || return 0
     case "$MENU_RESULT" in
@@ -1549,6 +1785,9 @@ display_menu() {
         disable_display_overlay
         ;;
       3)
+        idle_display_settings_menu
+        ;;
+      4)
         return 0
         ;;
     esac
