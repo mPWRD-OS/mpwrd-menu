@@ -14,6 +14,8 @@ readonly REPO_CHANNELS=("beta" "alpha" "daily")
 readonly AVAILABLE_CONFIG_DIR="/etc/meshtasticd/available.d"
 readonly ACTIVE_CONFIG_DIR="/etc/meshtasticd/config.d"
 readonly ARMBIAN_ENV_FILE="${ARMBIAN_ENV_FILE:-/boot/armbianEnv.txt}"
+readonly COLOR_RESET=$'\033[0m'
+readonly COLOR_YELLOW=$'\033[33m'
 
 MENU_RESULT=-1
 READ_KEY=""
@@ -137,6 +139,25 @@ mpwrd_menu_version() {
   printf '%s' "$version"
 }
 
+board_not_configured() {
+  local first_entry=""
+
+  IFS= read -r first_entry < <(find "$ACTIVE_CONFIG_DIR" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)
+  if [[ -n "$first_entry" ]]; then
+    return 1
+  fi
+
+  if [[ -d /proc/device-tree/hat ]]; then
+    return 1
+  fi
+
+  if command_exists lsusb && lsusb -d 1a86:5512 >/dev/null 2>&1; then
+    return 1
+  fi
+
+  return 0
+}
+
 print_version_info() {
   local menu_version=""
   local os_version=""
@@ -199,6 +220,8 @@ render_menu() {
   local page_size=0
   local release_version=""
   local start=0
+  local option_display=""
+  local warn_unconfigured=0
 
   count="${#options_ref[@]}"
   page_size="$(menu_window_size)"
@@ -228,6 +251,10 @@ render_menu() {
   if [[ "$title" == "Main Menu" ]] && release_version="$(mpwrd_os_version)"; then
     printf 'mPWRD-OS v%s\n' "$release_version"
   fi
+  if [[ "$title" == "Main Menu" ]] && board_not_configured; then
+    printf '%b\n' "${COLOR_YELLOW}BOARD NOT CONFIGURED${COLOR_RESET}"
+    warn_unconfigured=1
+  fi
   printf '============\n\n'
   printf '%s\n' "$title"
   printf '%s\n\n' "$prompt"
@@ -237,10 +264,14 @@ render_menu() {
   fi
 
   for (( i = start; i < end; i++ )); do
+    option_display="${options_ref[$i]}"
+    if (( warn_unconfigured )) && [[ "$option_display" == "Board Config" ]]; then
+      option_display="${COLOR_YELLOW}BOARD CONFIG${COLOR_RESET}"
+    fi
     if (( i == selected )); then
-      printf ' > %s\n' "${options_ref[$i]}"
+      printf ' > %b\n' "$option_display"
     else
-      printf '   %s\n' "${options_ref[$i]}"
+      printf '   %b\n' "$option_display"
     fi
   done
 
@@ -392,7 +423,9 @@ apt_package_action() {
 install_board_config_file() {
   local source_file="$1"
   local target_file="$2"
-  as_root mkdir -p "$ACTIVE_CONFIG_DIR" && as_root install -m 0644 "$source_file" "$target_file"
+  as_root mkdir -p "$ACTIVE_CONFIG_DIR" &&
+    as_root install -m 0644 "$source_file" "$target_file" &&
+    as_root systemctl restart "$MESHTASTIC_PACKAGE"
 }
 
 reset_array() {
