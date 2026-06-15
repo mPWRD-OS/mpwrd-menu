@@ -1917,8 +1917,9 @@ sanitize_field() {
   local value="$1"
   local pattern="$2"
 
-  # Empty passes through empty (a deliberate clear). A non-empty value that
-  # fails the allowlist returns empty too, so the caller drops just that flag.
+  # Empty passes through empty. A non-empty value that fails the allowlist also
+  # returns empty: tailscale_apply always sends the full flag set, so the flag
+  # is still passed but with an empty value, clearing that one setting.
   if [[ -n "$value" && "$value" =~ $pattern ]]; then
     printf '%s' "$value"
   fi
@@ -2304,6 +2305,13 @@ tailscale_menu() {
     message_box "Tailscale is not installed on this device.
 
 Install the 'tailscale' package, then return to this menu."
+    return 0
+  fi
+
+  if ! command_exists python3; then
+    message_box "python3 is required for the Tailscale screen but was not found.
+
+Install the 'python3' package, then return to this menu."
     return 0
   fi
 
