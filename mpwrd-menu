@@ -1944,14 +1944,14 @@ import json, sys
 d = json.load(sys.stdin)
 s = d.get("Self") or {}
 ips = s.get("TailscaleIPs") or []
-ip4 = next((x for x in ips if ":" not in x), ips[0] if ips else "")
+# Only an IPv4 (100.x) belongs in the "Tailnet IPv4" field; no IPv6 fallback.
+ip4 = next((x for x in ips if ":" not in x), "")
 fields = [
     d.get("BackendState") or "",
     s.get("HostName") or "",
     (s.get("DNSName") or "").rstrip("."),
     ip4,
     ((d.get("CurrentTailnet") or {}).get("Name")) or "",
-    "on" if s.get("ExitNodeOption") else "off",
 ]
 print("\n".join(fields))
 ' 2>/dev/null)" || return 1
@@ -1962,7 +1962,6 @@ print("\n".join(fields))
     IFS= read -r TS_DNSNAME
     IFS= read -r TS_IP4
     IFS= read -r TS_TAILNET
-    IFS= read -r TS_EXIT_STATE
   } <<< "$out"
 }
 
@@ -2021,6 +2020,7 @@ tailscale_apply() {
   local in_ssh="$6"
   local authkey hostname tags routes
   local dropped=()
+  local host_note=""
   local exit_flag="false"
   local ssh_flag="false"
   local rc=0
@@ -2028,14 +2028,19 @@ tailscale_apply() {
   authkey="$(sanitize_field "$in_authkey" "$TS_RE_AUTHKEY")"
   [[ -n "$in_authkey" && -z "$authkey" ]] && dropped+=("auth key")
   hostname="$(sanitize_field "$in_hostname" "$TS_RE_HOSTNAME")"
-  [[ -n "$in_hostname" && -z "$hostname" ]] && dropped+=("hostname")
+  # Hostname is special: it is never cleared. An invalid value falls back to the
+  # system hostname, so report that rather than listing it as "dropped".
+  [[ -n "$in_hostname" && -z "$hostname" ]] && host_note="invalid hostname ignored"
   tags="$(sanitize_field "$in_tags" "$TS_RE_TAGS")"
   [[ -n "$in_tags" && -z "$tags" ]] && dropped+=("tags")
   routes="$(sanitize_field "$in_routes" "$TS_RE_ROUTES")"
   [[ -n "$in_routes" && -z "$routes" ]] && dropped+=("routes")
 
   # Never pass an empty hostname; fall back to the system hostname.
-  [[ -z "$hostname" ]] && hostname="$(hostname 2>/dev/null || true)"
+  if [[ -z "$hostname" ]]; then
+    hostname="$(hostname 2>/dev/null || true)"
+    [[ -n "$host_note" ]] && host_note="${host_note}; using system hostname \"${hostname}\""
+  fi
 
   [[ "$in_exit" == true ]] && exit_flag="true"
   [[ "$in_ssh" == true ]] && ssh_flag="true"
@@ -2062,6 +2067,7 @@ tailscale_apply() {
     printf 'NOTE: dropped invalid field(s): %s\n' "$(IFS=','; printf '%s' "${dropped[*]}")"
     printf '      Other settings were kept; re-enter the dropped field if needed.\n\n'
   fi
+  [[ -n "$host_note" ]] && printf 'NOTE: %s\n\n' "$host_note"
   if [[ -z "$authkey" ]]; then
     printf 'No auth key set - starting interactive login.\n'
     printf 'Scan the QR code with your phone, or open the URL shown.\n\n'
@@ -2081,7 +2087,7 @@ tailscale_apply() {
 }
 
 tailscale_status_screen() {
-  local pid pill status_text
+  local pid pill status_text exit_disp
   local actions=("Bring down" "Logout" "Interactive login" "Refresh" "Back")
 
   while true; do
@@ -2107,7 +2113,11 @@ Is the tailscaled service running?"
       *) pill="[ $TS_STATE ]" ;;
     esac
 
-    printf -v status_text '  State:         %s\n  Daemon PID:    %s\n  Hostname:      %s\n  Tailnet IPv4:  %s\n  Tailnet name:  %s\n  MagicDNS:      %s\n  Adv. routes:   %s\n  Adv. tags:     %s\n  Exit node:     %s' \
+    # Show the *advertised* exit-node state (same source as Setup's toggle), so
+    # Status and Setup never disagree about what Apply configures.
+    [[ "${TS_P_EXIT:-false}" == true ]] && exit_disp="on" || exit_disp="off"
+
+    printf -v status_text '  State:           %s\n  Daemon PID:      %s\n  Hostname:        %s\n  Tailnet IPv4:    %s\n  Tailnet name:    %s\n  MagicDNS:        %s\n  Adv. routes:     %s\n  Adv. tags:       %s\n  Adv. exit node:  %s' \
       "$pill" \
       "$pid" \
       "${TS_HOST:-(none)}" \
@@ -2116,7 +2126,7 @@ Is the tailscaled service running?"
       "${TS_DNSNAME:-(none)}" \
       "${TS_P_ROUTES:-(none)}" \
       "${TS_P_TAGS:-(none)}" \
-      "${TS_EXIT_STATE:-off}"
+      "$exit_disp"
 
     menu_choose 'Tailscale Status' "$status_text" actions || return 0
     case "$MENU_RESULT" in
