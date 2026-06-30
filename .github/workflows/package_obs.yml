@@ -37,7 +37,7 @@ jobs:
       should_release: ${{ steps.metadata.outputs.should_release }}
     steps:
       - name: Checkout release ref
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ inputs.ref || github.sha }}
@@ -122,7 +122,7 @@ jobs:
       - build-debian-src
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: mpwrd-menu
           ref: ${{ needs.prepare-release.outputs.checkout_ref }}
