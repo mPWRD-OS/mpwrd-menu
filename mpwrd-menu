@@ -17,6 +17,17 @@ readonly ARMBIAN_ENV_FILE="${ARMBIAN_ENV_FILE:-/boot/armbianEnv.txt}"
 readonly COLOR_RESET=$'\033[0m'
 readonly COLOR_YELLOW=$'\033[33m'
 
+readonly TAILSCALED_UNIT="tailscaled"
+readonly TS_DOC_URL="https://github.com/mPWRD-OS/mPWRD-OS"
+readonly TS_SUBNET_DOC_URL="https://tailscale.com/kb/1019/subnets"
+# Whitelist patterns for values spliced into the tailscale up command line.
+# Anything outside the allowlist is dropped (its flag cleared) rather than
+# failing the whole Apply, so a bad field never costs the operator a pasted key.
+readonly TS_RE_AUTHKEY='^[A-Za-z0-9_-]{12,}$'
+readonly TS_RE_HOSTNAME='^[A-Za-z0-9._-]+$'
+readonly TS_RE_TAGS='^[A-Za-z0-9_:,-]+$'
+readonly TS_RE_ROUTES='^[0-9/.,]+$'
+
 MENU_RESULT=-1
 READ_KEY=""
 APP_LABELS=()
@@ -1857,6 +1868,506 @@ board_config_menu() {
   done
 }
 
+prompt_text() {
+  local -n out_ref="$1"
+  local label="$2"
+  local default_value="${3:-}"
+  local input=""
+
+  show_cursor
+  clear_screen
+  printf '%s\n\n' "$label"
+  if [[ -n "$default_value" ]]; then
+    printf 'Current: %s\n' "$default_value"
+  fi
+  printf 'Enter a new value (blank keeps current, "-" clears it):\n> '
+  IFS= read -r input || input=""
+  hide_cursor
+
+  case "$input" in
+    "")
+      out_ref="$default_value"
+      ;;
+    "-")
+      out_ref=""
+      ;;
+    *)
+      out_ref="$input"
+      ;;
+  esac
+}
+
+prompt_secret() {
+  local -n out_ref="$1"
+  local label="$2"
+  local input=""
+
+  show_cursor
+  clear_screen
+  printf '%s\n\n' "$label"
+  printf 'Paste the value (hidden), then Enter. Blank leaves it unset:\n> '
+  IFS= read -rs input || input=""
+  printf '\n'
+  hide_cursor
+
+  out_ref="$input"
+}
+
+sanitize_field() {
+  local value="$1"
+  local pattern="$2"
+
+  # Empty passes through empty. A non-empty value that fails the allowlist also
+  # returns empty: tailscale_apply always sends the full flag set, so the flag
+  # is still passed but with an empty value, clearing that one setting.
+  if [[ -n "$value" && "$value" =~ $pattern ]]; then
+    printf '%s' "$value"
+  fi
+}
+
+ts_backend_state() {
+  tailscale status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("BackendState") or "")
+except Exception:
+    pass
+' 2>/dev/null
+}
+
+ts_read_status() {
+  local json out
+
+  json="$(tailscale status --json 2>/dev/null)" || return 1
+  out="$(printf '%s' "$json" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+s = d.get("Self") or {}
+ips = s.get("TailscaleIPs") or []
+# Only an IPv4 (100.x) belongs in the "Tailnet IPv4" field; no IPv6 fallback.
+ip4 = next((x for x in ips if ":" not in x), "")
+fields = [
+    d.get("BackendState") or "",
+    s.get("HostName") or "",
+    (s.get("DNSName") or "").rstrip("."),
+    ip4,
+    ((d.get("CurrentTailnet") or {}).get("Name")) or "",
+]
+print("\n".join(fields))
+' 2>/dev/null)" || return 1
+
+  {
+    IFS= read -r TS_STATE
+    IFS= read -r TS_HOST
+    IFS= read -r TS_DNSNAME
+    IFS= read -r TS_IP4
+    IFS= read -r TS_TAILNET
+  } <<< "$out"
+}
+
+ts_read_prefs() {
+  local json out
+
+  json="$(as_root tailscale debug prefs 2>/dev/null)" || return 1
+  out="$(printf '%s' "$json" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+routes = d.get("AdvertiseRoutes") or []
+tags = d.get("AdvertiseTags") or []
+# tailscale stores --advertise-exit-node as the two default routes.
+exit_on = ("0.0.0.0/0" in routes) or ("::/0" in routes)
+subnet = [r for r in routes if r not in ("0.0.0.0/0", "::/0")]
+fields = [
+    d.get("Hostname") or "",
+    ",".join(subnet),
+    ",".join(tags),
+    "true" if exit_on else "false",
+    "true" if d.get("RunSSH") else "false",
+]
+print("\n".join(fields))
+' 2>/dev/null)" || return 1
+
+  {
+    IFS= read -r TS_P_HOST
+    IFS= read -r TS_P_ROUTES
+    IFS= read -r TS_P_TAGS
+    IFS= read -r TS_P_EXIT
+    IFS= read -r TS_P_SSH
+  } <<< "$out"
+}
+
+tailscale_interactive_login() {
+  # Native QR login: tailscale prints a scannable QR and the plain URL beneath
+  # it, and blocks until the operator completes sign-in on their phone.
+  show_cursor
+  clear_screen
+  printf 'Tailscale Sign-in\n=================\n\n'
+  printf 'Scan the QR code below with the phone running the hotspot,\n'
+  printf 'or open the URL printed beneath it. Waiting for login...\n'
+  printf '(Press Ctrl+C to cancel.)\n\n'
+  as_root tailscale login --qr
+  printf '\n'
+  pause_prompt
+  hide_cursor
+}
+
+tailscale_apply() {
+  local in_authkey="$1"
+  local in_hostname="$2"
+  local in_tags="$3"
+  local in_routes="$4"
+  local in_exit="$5"
+  local in_ssh="$6"
+  local authkey hostname tags routes
+  local dropped=()
+  local host_note=""
+  local exit_flag="false"
+  local ssh_flag="false"
+  local rc=0
+
+  authkey="$(sanitize_field "$in_authkey" "$TS_RE_AUTHKEY")"
+  [[ -n "$in_authkey" && -z "$authkey" ]] && dropped+=("auth key")
+  hostname="$(sanitize_field "$in_hostname" "$TS_RE_HOSTNAME")"
+  # Hostname is special: it is never cleared. An invalid value falls back to the
+  # system hostname, so report that rather than listing it as "dropped".
+  [[ -n "$in_hostname" && -z "$hostname" ]] && host_note="invalid hostname ignored"
+  tags="$(sanitize_field "$in_tags" "$TS_RE_TAGS")"
+  [[ -n "$in_tags" && -z "$tags" ]] && dropped+=("tags")
+  routes="$(sanitize_field "$in_routes" "$TS_RE_ROUTES")"
+  [[ -n "$in_routes" && -z "$routes" ]] && dropped+=("routes")
+
+  # Never pass an empty hostname; fall back to the system hostname.
+  if [[ -z "$hostname" ]]; then
+    hostname="$(hostname 2>/dev/null || true)"
+    [[ -n "$host_note" ]] && host_note="${host_note}; using system hostname \"${hostname}\""
+  fi
+
+  [[ "$in_exit" == true ]] && exit_flag="true"
+  [[ "$in_ssh" == true ]] && ssh_flag="true"
+
+  # CRITICAL: tailscale up is stateful — omitted flags revert to defaults.
+  # Always send the COMPLETE flag set so Apply never silently clears a setting.
+  local cmd=(tailscale up
+    --hostname="$hostname"
+    --advertise-tags="$tags"
+    --advertise-routes="$routes"
+    --advertise-exit-node="$exit_flag"
+    --ssh="$ssh_flag")
+  if [[ -n "$authkey" ]]; then
+    cmd+=(--authkey="$authkey")
+  else
+    # No key -> fall back to interactive QR login.
+    cmd+=(--qr)
+  fi
+
+  show_cursor
+  clear_screen
+  printf 'Applying Tailscale configuration\n================================\n\n'
+  if (( ${#dropped[@]} > 0 )); then
+    printf 'NOTE: dropped invalid field(s): %s\n' "$(IFS=','; printf '%s' "${dropped[*]}")"
+    printf '      Other settings were kept; re-enter the dropped field if needed.\n\n'
+  fi
+  [[ -n "$host_note" ]] && printf 'NOTE: %s\n\n' "$host_note"
+  if [[ -z "$authkey" ]]; then
+    printf 'No auth key set - starting interactive login.\n'
+    printf 'Scan the QR code with your phone, or open the URL shown.\n\n'
+  fi
+
+  as_root "${cmd[@]}"
+  rc=$?
+  printf '\n'
+  if (( rc == 0 )); then
+    printf 'Tailscale configuration applied.\n'
+  else
+    printf 'tailscale up exited with status %d.\n' "$rc"
+  fi
+  pause_prompt
+  hide_cursor
+  return "$rc"
+}
+
+tailscale_status_screen() {
+  local pid pill status_text exit_disp
+  local actions=("Bring down" "Logout" "Interactive login" "Refresh" "Back")
+
+  while true; do
+    if ! ts_read_status; then
+      message_box "Could not read Tailscale status.
+
+Is the tailscaled service running?"
+      return 0
+    fi
+    ts_read_prefs || true
+
+    pid="$(systemctl show -p MainPID --value "$TAILSCALED_UNIT" 2>/dev/null || true)"
+    if [[ -z "$pid" || "$pid" == "0" ]]; then
+      pid="$(pgrep -x "$TAILSCALED_UNIT" 2>/dev/null | head -n1)"
+    fi
+    [[ -z "$pid" ]] && pid="(not running)"
+
+    case "$TS_STATE" in
+      Running) pill="[ RUNNING ]" ;;
+      NeedsLogin) pill="[ NEEDS LOGIN ]" ;;
+      Stopped) pill="[ STOPPED ]" ;;
+      "") pill="[ UNKNOWN ]" ;;
+      *) pill="[ $TS_STATE ]" ;;
+    esac
+
+    # Show the *advertised* exit-node state (same source as Setup's toggle), so
+    # Status and Setup never disagree about what Apply configures.
+    [[ "${TS_P_EXIT:-false}" == true ]] && exit_disp="on" || exit_disp="off"
+
+    printf -v status_text '  State:           %s\n  Daemon PID:      %s\n  Hostname:        %s\n  Tailnet IPv4:    %s\n  Tailnet name:    %s\n  MagicDNS:        %s\n  Adv. routes:     %s\n  Adv. tags:       %s\n  Adv. exit node:  %s' \
+      "$pill" \
+      "$pid" \
+      "${TS_HOST:-(none)}" \
+      "${TS_IP4:-(none)}" \
+      "${TS_TAILNET:-(none)}" \
+      "${TS_DNSNAME:-(none)}" \
+      "${TS_P_ROUTES:-(none)}" \
+      "${TS_P_TAGS:-(none)}" \
+      "$exit_disp"
+
+    menu_choose 'Tailscale Status' "$status_text" actions || return 0
+    case "$MENU_RESULT" in
+      0)
+        run_and_pause 'Bringing Tailscale down...' as_root tailscale down
+        ;;
+      1)
+        if confirm_action 'Logout' 'Log out of Tailscale on this device?'; then
+          run_and_pause 'Logging out of Tailscale...' as_root tailscale logout
+        fi
+        ;;
+      2)
+        tailscale_interactive_login
+        ;;
+      3)
+        : # loop re-reads status
+        ;;
+      4)
+        return 0
+        ;;
+    esac
+  done
+}
+
+tailscale_setup_menu() {
+  local authkey=""
+  local hostname routes tags exit_node ssh_srv
+  local options
+
+  ts_read_prefs || true
+  hostname="${TS_P_HOST:-$(hostname 2>/dev/null || true)}"
+  routes="${TS_P_ROUTES:-}"
+  tags="${TS_P_TAGS:-}"
+  exit_node="${TS_P_EXIT:-false}"
+  ssh_srv="${TS_P_SSH:-false}"
+
+  while true; do
+    local key_disp="[not set]"
+    [[ -n "$authkey" ]] && key_disp="[set - hidden]"
+    options=(
+      "Pre-auth key:   ${key_disp}"
+      "Hostname:       ${hostname:-(none)}"
+      "Tags:           ${tags:-(none)}"
+      "Routes:         ${routes:-(none)}"
+      "Exit node:      $( [[ "$exit_node" == true ]] && printf 'on' || printf 'off' )"
+      "Tailscale SSH:  $( [[ "$ssh_srv" == true ]] && printf 'on' || printf 'off' )"
+      "Apply"
+      "Back"
+    )
+
+    menu_choose 'Tailscale Setup' 'Edit fields, then Apply. Apply always re-sends every flag.' options || return 0
+    case "$MENU_RESULT" in
+      0)
+        prompt_secret authkey 'Pre-auth key (tskey-auth-...)'
+        ;;
+      1)
+        prompt_text hostname 'Hostname' "$hostname"
+        ;;
+      2)
+        prompt_text tags 'Advertise tags (comma-separated, e.g. tag:mpwrd-node)' "$tags"
+        ;;
+      3)
+        prompt_text routes 'Advertise routes (comma-separated CIDRs, e.g. 192.168.1.0/24)' "$routes"
+        ;;
+      4)
+        [[ "$exit_node" == true ]] && exit_node=false || exit_node=true
+        ;;
+      5)
+        [[ "$ssh_srv" == true ]] && ssh_srv=false || ssh_srv=true
+        ;;
+      6)
+        tailscale_apply "$authkey" "$hostname" "$tags" "$routes" "$exit_node" "$ssh_srv"
+        authkey="" # one-shot: consumed on Apply, never persisted
+        ;;
+      7)
+        return 0
+        ;;
+    esac
+  done
+}
+
+tailscale_peers_screen() {
+  local json table
+
+  json="$(tailscale status --json 2>/dev/null)" || {
+    message_box 'Could not read Tailscale status.'
+    return 0
+  }
+
+  table="$(printf '%s' "$json" | python3 -c '
+import datetime
+import json
+import sys
+
+d = json.load(sys.stdin)
+peers = d.get("Peer") or {}
+
+def age(ls):
+    if not ls:
+        return "-"
+    try:
+        t = datetime.datetime.fromisoformat(ls.replace("Z", "+00:00"))
+    except Exception:
+        return "-"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    s = max(0, int((now - t).total_seconds()))
+    if s < 60:
+        return "%ds" % s
+    if s < 3600:
+        return "%dm" % (s // 60)
+    if s < 86400:
+        return "%dh" % (s // 3600)
+    return "%dd" % (s // 86400)
+
+rows = []
+for p in peers.values():
+    ips = p.get("TailscaleIPs") or []
+    ip4 = next((x for x in ips if ":" not in x), ips[0] if ips else "")
+    online = bool(p.get("Online"))
+    rows.append((
+        "*" if online else " ",
+        (p.get("HostName") or "")[:20],
+        (p.get("OS") or "")[:7],
+        ip4,
+        "online" if online else age(p.get("LastSeen")),
+    ))
+
+rows.sort(key=lambda r: (r[0] != "*", r[1].lower()))
+print("%s %-20s %-7s %-15s %s" % ("", "HOSTNAME", "OS", "TAILNET IP", "LAST SEEN"))
+for r in rows:
+    print("%s %-20s %-7s %-15s %s" % r)
+if not rows:
+    print("(no peers)")
+' 2>/dev/null)" || {
+    message_box 'Could not parse Tailscale peers.'
+    return 0
+  }
+
+  message_box "Tailscale Peers   (* = online)
+==============================
+
+$table"
+}
+
+tailscale_help_screen() {
+  message_box "Tailscale - Fleet Workflow Help
+================================
+
+WHAT THIS IS
+  Bridge a local mesh / device to a remote command center over a
+  phone hotspot + Tailscale. Works off-grid for SAR / ATAK ops.
+
+AUTH KEYS
+  Generate a pre-auth key in the Tailscale admin console:
+    Settings -> Keys -> Generate auth key   (looks like tskey-auth-...)
+  Paste it into Setup -> Pre-auth key, then Apply. One-shot: it is
+  consumed on Apply and is never stored on this device.
+
+TAGS
+  Tags (e.g. tag:mpwrd-node) identify this device in the Tailnet ACL
+  policy and control which peers it can reach. The auth key must be
+  authorized to apply the tags you advertise.
+
+OFF-GRID PATTERN
+  Put ONE node on a WAN uplink (the hotspot) and have it advertise the
+  local mesh subnet:
+    Routes:     192.168.x.0/24
+    Exit node:  on   (optional - route ALL remote traffic through it)
+  Approve the advertised routes once in the admin console. Remote
+  command-center peers then reach the whole local subnet through it.
+
+SIGN-IN WITHOUT A KEY
+  Leave Pre-auth key blank and Apply: a QR code appears. Scan it with
+  the hotspot phone (or open the URL) to authenticate interactively.
+
+DOCS
+  $TS_DOC_URL
+  $TS_SUBNET_DOC_URL"
+}
+
+tailscale_menu() {
+  local state options
+  local idx_signin idx_peers idx_help idx_back
+
+  if ! command_exists tailscale; then
+    message_box "Tailscale is not installed on this device.
+
+Install the 'tailscale' package, then return to this menu."
+    return 0
+  fi
+
+  if ! command_exists python3; then
+    message_box "python3 is required for the Tailscale screen but was not found.
+
+Install the 'python3' package, then return to this menu."
+    return 0
+  fi
+
+  while true; do
+    state="$(ts_backend_state)"
+    options=("Status" "Setup")
+    idx_signin=-1
+    idx_peers=-1
+
+    if [[ "$state" == "NeedsLogin" ]]; then
+      idx_signin="${#options[@]}"
+      options+=("Sign in")
+    fi
+    if [[ "$state" == "Running" ]]; then
+      idx_peers="${#options[@]}"
+      options+=("Peers")
+    fi
+
+    idx_help="${#options[@]}"
+    options+=("Help / Fleet workflow")
+    idx_back="${#options[@]}"
+    options+=("Back")
+
+    menu_choose 'Tailscale' "Backend state: ${state:-unknown}" options || return 0
+    case "$MENU_RESULT" in
+      0)
+        tailscale_status_screen
+        ;;
+      1)
+        tailscale_setup_menu
+        ;;
+      *)
+        if (( idx_signin >= 0 && MENU_RESULT == idx_signin )); then
+          tailscale_interactive_login
+        elif (( idx_peers >= 0 && MENU_RESULT == idx_peers )); then
+          tailscale_peers_screen
+        elif (( MENU_RESULT == idx_help )); then
+          tailscale_help_screen
+        elif (( MENU_RESULT == idx_back )); then
+          return 0
+        fi
+        ;;
+    esac
+  done
+}
+
 main_menu() {
   local options=(
     "Contact - A Console UI for Meshtastic"
@@ -1866,6 +2377,7 @@ main_menu() {
     "Mesh Apps Manager"
     "Network Quick Start"
     "Board Config"
+    "Tailscale"
   )
   local display_option=-1
   local exit_option=-1
@@ -1901,6 +2413,9 @@ main_menu() {
         ;;
       6)
         board_config_menu
+        ;;
+      7)
+        tailscale_menu
         ;;
       *)
         if (( display_option >= 0 && MENU_RESULT == display_option )); then
